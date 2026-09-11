@@ -27,14 +27,14 @@ Agent（Codex），然后去倒杯咖啡：
 
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
-2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
-3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
+2. 下载 custom fork https://github.com/svl33333/codex-with-chatgpt 的
+   固定版本，不要使用未审核的工作树。
+3. 在该版本运行 `scripts/bootstrap-custom-c2c.ps1`（Windows）或平台对应脚本；
+   它会使用 frozen lockfile 构建并生成用户级 `c2c-svl` 启动器。
+4. 如果使用 TeamAI，执行 `teamai pull` 获取共享 Skill；否则把该版本的
+   `skill/SKILL.md` 复制到 `~/.codex/skills/codex-with-chatgpt/`。
 5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
+  （运行 `c2c-svl setup`，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
    全程只用内置浏览器，禁止打开任何第三方浏览器。
 6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
    而且一次只告诉我一个动作。

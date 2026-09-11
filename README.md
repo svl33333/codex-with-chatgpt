@@ -43,14 +43,14 @@ Detailed docs below are in English · 详细中文文档见 **[README.zh-CN.md](
 
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
-2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
-3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
+2. 下载 custom fork https://github.com/svl33333/codex-with-chatgpt 的
+   固定版本，不要用未审核的工作树。
+3. 在该版本运行 `scripts/bootstrap-custom-c2c.ps1`（Windows）或其
+   等价脚本；它会使用 frozen lockfile 构建并生成用户级 `c2c-svl` 启动器。
+4. 如果使用 TeamAI，执行 `teamai pull` 获取共享 Skill；否则把该版本的
+   `skill/SKILL.md` 复制到 `~/.codex/skills/codex-with-chatgpt/`。
 5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
+  （运行 `c2c-svl setup`，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
    全程只用内置浏览器，禁止打开任何第三方浏览器。
 6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
    而且一次只告诉我一个动作。
@@ -69,14 +69,17 @@ I am a non-technical user — do everything yourself:
 1. Check the environment: git and Node.js >= 20 must be available. Install
    anything missing yourself (macOS: Homebrew, Windows: winget). Also install
    cloudflared.
-2. Download: clone https://github.com/XiaoDuoYa/codex-with-chatgpt into
-   ~/codex-with-chatgpt (if it already exists, git pull to update).
-3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
-4. Install the Skill: copy skill/SKILL.md to
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md, and update the line
-   "The codex-with-chatgpt checkout lives at:" to the actual clone path.
+2. Fetch the pinned release from the custom fork
+   https://github.com/svl33333/codex-with-chatgpt; do not use an unreviewed
+   working tree.
+3. Run `scripts/bootstrap-custom-c2c.ps1` (or the platform equivalent). It
+   installs with the frozen lockfile, builds, and creates the user-level
+   `c2c-svl` launcher.
+4. If TeamAI is installed, run `teamai pull` to receive the shared Skill;
+   otherwise copy that release's `skill/SKILL.md` to
+   `~/.codex/skills/codex-with-chatgpt/`.
 5. First-time setup: follow the SKILL.md "first-time setup" workflow
-   (run c2c setup, configure the ChatGPT connector in the BUILT-IN browser,
+   (run `c2c-svl setup`, configure the ChatGPT connector in the BUILT-IN browser,
    enter the pairing code). Never open a third-party browser.
 6. Only interrupt me for logins (ChatGPT / Cloudflare), CAPTCHAs or 2FA —
    and give me exactly ONE action at a time.
