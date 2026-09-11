@@ -56,6 +56,15 @@ import {
 } from "../session/state.js";
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
+import {
+  canonicalRepositoryFor,
+  endpointFingerprint,
+  getInstallationIdentity,
+  makeConnectionBinding,
+  readConnectionBinding,
+  writeConnectionBinding,
+  type EndpointMode,
+} from "../connection/identity.js";
 
 const program = new Command();
 
@@ -113,26 +122,46 @@ function readCappedUtf8(filePath: string, maxBytes: number): string {
 
 function persistWorkspaceEndpoint(opts: {
   workspaceId: string;
+  workspaceRoot: string;
   workspaceName: string;
   port: number;
   publicUrl: string | null;
   mcpUrl: string;
+  endpointMode?: EndpointMode;
   previous?: LastEndpoint | null;
 }): string {
   const previous = opts.previous ?? readLastEndpoint(opts.workspaceId);
+  const installation = getInstallationIdentity();
+  const endpointMode = opts.endpointMode ?? "ephemeral";
   const connectorName = connectorNameFor({
     workspaceName: opts.workspaceName,
     workspaceId: opts.workspaceId,
     previousName: previous?.connectorName,
     hadEndpointBefore: Boolean(previous),
+    installationId: installation.installationId,
   });
   writeLastEndpoint({
     workspaceId: opts.workspaceId,
+    workspace: opts.workspaceName,
+    canonicalRepository: canonicalRepositoryFor(opts.workspaceRoot),
+    installationId: installation.installationId,
+    endpointMode,
+    endpointFingerprint: endpointFingerprint(opts.mcpUrl, endpointMode),
     port: opts.port,
     publicUrl: opts.publicUrl,
     mcpUrl: opts.mcpUrl,
     connectorName,
   });
+  writeConnectionBinding(
+    makeConnectionBinding({
+      workspaceId: opts.workspaceId,
+      workspace: opts.workspaceName,
+      workspaceRoot: opts.workspaceRoot,
+      endpoint: opts.mcpUrl,
+      endpointMode,
+      connectorName,
+    })
+  );
   return connectorName;
 }
 
@@ -254,6 +283,7 @@ program
       const connectorName = mcpUrl
         ? persistWorkspaceEndpoint({
             workspaceId: info.workspaceId,
+            workspaceRoot: root,
             workspaceName: info.workspaceName,
             port: runtime.port,
             publicUrl: info.publicUrl,
@@ -294,6 +324,7 @@ program
       const connectorName = mcpUrl
         ? persistWorkspaceEndpoint({
             workspaceId: info.workspaceId,
+            workspaceRoot: root,
             workspaceName: info.workspaceName,
             port: runtime.port,
             publicUrl: info.publicUrl,
@@ -304,6 +335,7 @@ program
             workspaceId: info.workspaceId,
             previousName: readLastEndpoint(info.workspaceId)?.connectorName,
             hadEndpointBefore: Boolean(readLastEndpoint(info.workspaceId)),
+            installationId: getInstallationIdentity().installationId,
           });
       const pairingResult = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
       const tunnelState = readTunnelState(info.workspaceId);
@@ -504,6 +536,7 @@ program
           workspaceId: workspace.id,
           previousName: lastEndpoint?.connectorName,
           hadEndpointBefore: Boolean(lastEndpoint),
+          installationId: getInstallationIdentity().installationId,
         })
       : "Codex with ChatGPT";
     const tunnelState = workspace ? readTunnelState(workspace.id) : null;
@@ -591,10 +624,12 @@ program
         const boundName = nextMcp
           ? persistWorkspaceEndpoint({
               workspaceId: info.workspaceId,
+              workspaceRoot: root,
               workspaceName: info.workspaceName,
               port: runtime.port,
               publicUrl: currentUrl,
               mcpUrl: nextMcp,
+              endpointMode: namedReady ? "stable" : "ephemeral",
               previous: lastEndpoint,
             })
           : connectorName;
@@ -772,6 +807,53 @@ program
       say(`Workspace：${data.name}（${data.workspaceId}）`);
       say(`类型：${data.projectType}  语言：${data.languages.join(", ") || "-"}`);
       say(`路径：${data.root}`);
+    }
+  });
+
+// ---------------------------------------------------------------- identity
+
+program
+  .command("identity")
+  .description("Show the user-local connection identity for this workspace")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const installation = getInstallationIdentity();
+      const endpoint = readLastEndpoint(workspace.id);
+      const binding = readConnectionBinding(workspace.id);
+      const data = {
+        ok: true,
+        workspaceId: workspace.id,
+        workspace: workspace.name,
+        canonicalRepository: canonicalRepositoryFor(workspace.root),
+        installationId: installation.installationId,
+        endpointMode: endpoint?.endpointMode ?? binding?.endpointMode ?? "local",
+        endpointFingerprint: endpoint?.endpointFingerprint ?? binding?.endpointFingerprint ?? null,
+        connectorName: endpoint?.connectorName ?? binding?.connectorName ?? null,
+        binding: binding
+          ? {
+              workspace: binding.workspace,
+              canonicalRepository: binding.canonicalRepository,
+              installationId: binding.installationId,
+              endpointMode: binding.endpointMode,
+              endpointFingerprint: binding.endpointFingerprint,
+              connectorName: binding.connectorName,
+              projectId: binding.projectId ?? null,
+            }
+          : null,
+      };
+      if (opts.json) say(JSON.stringify(data));
+      else {
+        say(`Workspace：${data.workspace}（${data.workspaceId}）`);
+        say(`Repository：${data.canonicalRepository}`);
+        say(`Installation：${data.installationId.slice(0, 8)}`);
+        say(`Connector：${data.connectorName ?? "未登録"}`);
+        say(`Endpoint：${data.endpointMode}（${data.endpointFingerprint ?? "未登録"}）`);
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
     }
   });
 

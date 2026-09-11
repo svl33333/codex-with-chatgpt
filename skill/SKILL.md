@@ -179,14 +179,34 @@ that close the tab, hide the window, or stall on the settings page.
 
 ## Locations
 
-- The codex-with-chatgpt checkout lives at: `<ACTUAL_CHECKOUT_PATH>`
-  (installer/update MUST replace this line in the installed Skill with the user's actual checkout path.)
-- CLI: let `<checkout>` mean the path on the previous line; run
-  `node "<checkout>/bin/c2c.js" <command>` (or `c2c <command>` if globally linked).
-  All commands support `--json` for parsing.
-- If the checkout has no `node_modules` or no `dist/`, first run
-  `corepack pnpm install && corepack pnpm build` inside it.
+- The custom runtime is installed by the pinned bootstrap described in
+  `docs/custom-stability-patches.md`. Resolve `<checkout>` from the install
+  manifest or the `c2c-svl` launcher; never guess a repository path and never
+  use an unrelated upstream checkout.
+- CLI: run `node "<checkout>/bin/c2c.js" <command>` (or `c2c-svl <command>`
+  when the launcher is on PATH). All commands support `--json` for parsing.
+- If the pinned checkout has no `node_modules` or no `dist/`, run
+  `corepack pnpm install --frozen-lockfile && corepack pnpm build` inside it.
 - Always pass `-w <workspace root>` (the project the user is working on, NOT the c2c repo).
+
+## Stability preflight
+
+Before any workflow that can touch a connector or send a control message:
+
+1. Read the user-local installation identity and this workspace's binding.
+2. Resolve the canonical repository and endpoint fingerprint, then compare the
+   saved workspace, repository, installation, endpoint mode, and connector name.
+3. Run the read-only health checks and `workspace_info` before mutating ChatGPT.
+   A matching binding is the normal reuse path and has zero connector mutations.
+4. For an explicit replacement, resume the persisted operation checkpoint. Verify
+   ownership before deletion, verify absence before creation, and reconcile a
+   create timeout by listing and checking `workspace_info` before any retry.
+5. For every control message, persist `prepared`/`sending` before transport,
+   derive the key from task + iteration + message id, and reconcile remote status
+   after a timeout. Treat `reasoning`/`in_progress` as waiting; never blind-resend
+   an ambiguous delivery.
+6. Stop with `CONNECTION_WAITING` or `BLOCKED` when identity, ownership,
+   repository, project, stage, role, or remote delivery cannot be verified.
 
 ## Daily update check
 
@@ -207,18 +227,14 @@ commands (both are cheap / cached; never mention them unless an update exists):
 
 ## Workflow: update（"更新 Codex with ChatGPT"，or triggered by the daily check）
 
-Inside the checkout directory (see Locations):
-
-1. `git pull --ff-only` (if it fails due to local edits: `git stash && git pull --ff-only`).
-2. `corepack pnpm install && corepack pnpm build`.
-3. Re-install the Skill: copy `skill/SKILL.md` to
-   `~/.codex/skills/codex-with-chatgpt/SKILL.md`, then fix the "checkout lives at:"
-   line in the copy to the actual checkout path.
-4. `c2c sandbox-allow --json` (so existing installs pick up the sandbox allowlist),
-   then `c2c restart -w <workspace>` so the bridge runs the new code, then
-   `c2c update-check --force --json` to refresh the cache (should now report up to date).
-5. Tell the user "✓ 已更新到最新版本" — then resume whatever task triggered this.
-   (The updated SKILL.md takes effect from the next Codex session; that's expected.)
+Run `scripts/update-custom-c2c.ps1 -Ref <approved-ref>` from the pinned
+distribution checkout or from the TeamAI documentation checkout. The updater
+fetches the custom fork into a new version directory, verifies the ref, installs
+with the frozen lockfile, builds, and advances the user-local manifest only
+after the build passes. It leaves any existing runtime directory untouched.
+Then run `c2c-svl sandbox-allow --json`, restart the bridge for the workspace,
+and run `c2c-svl update-check --force --json`. The updated Skill is distributed
+by TeamAI; it takes effect in the next agent session.
 
 ## Connection choice (once per workspace)
 

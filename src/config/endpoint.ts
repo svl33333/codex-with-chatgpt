@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "./paths.js";
+import { connectorNameForInstallation, endpointFingerprint, type EndpointMode } from "../connection/identity.js";
 
 export const CHATGPT_DEVELOPER_MODE_URL = "https://chatgpt.com/#settings/Security";
 export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
@@ -10,6 +11,11 @@ export const DEFAULT_CONNECTOR_NAME = "Codex with ChatGPT";
 
 export interface LastEndpoint {
   workspaceId: string;
+  workspace?: string;
+  canonicalRepository?: string;
+  installationId?: string;
+  endpointMode?: EndpointMode;
+  endpointFingerprint?: string;
   port: number;
   publicUrl: string | null;
   mcpUrl: string | null;
@@ -69,8 +75,12 @@ export function connectorNameFor(opts: {
   workspaceId: string;
   previousName?: string | null;
   hadEndpointBefore: boolean;
+  installationId?: string | null;
 }): string {
   if (opts.previousName?.trim()) return opts.previousName.trim();
+  if (opts.installationId?.trim()) {
+    return connectorNameForInstallation(opts.workspaceName, opts.installationId);
+  }
   if (opts.hadEndpointBefore) return DEFAULT_CONNECTOR_NAME;
   return `${DEFAULT_CONNECTOR_NAME} · ${sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId)}`;
 }
