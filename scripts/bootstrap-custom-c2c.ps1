@@ -42,7 +42,7 @@ $manifestPath = Join-Path $resolvedRoot "runtime.json"
 New-Item -ItemType Directory -Force -Path $resolvedRoot | Out-Null
 
 if (Test-Path (Join-Path $versionDirectory ".git")) {
-  $existingRemote = (& git -C $versionDirectory remote get-url origin 2>$null).Trim()
+  $existingRemote = ((& git -C $versionDirectory remote get-url origin 2>$null) | Out-String).Trim()
   if ($existingRemote -and $existingRemote -ne $Repository) {
     throw "Ref directory already belongs to another repository: $versionDirectory"
   }
@@ -52,7 +52,7 @@ if (Test-Path (Join-Path $versionDirectory ".git")) {
   Invoke-Checked "git" @("clone", "--branch", $Ref, "--depth", "1", $Repository, $versionDirectory) $resolvedRoot
 }
 
-$status = (& git -C $versionDirectory status --porcelain).Trim()
+$status = ((& git -C $versionDirectory status --porcelain 2>$null) | Out-String).Trim()
 if ($status) { throw "Pinned runtime checkout is dirty; refusing to build over local changes: $versionDirectory" }
 Invoke-Checked "corepack" @("pnpm", "install", "--frozen-lockfile") $versionDirectory
 Invoke-Checked "corepack" @("pnpm", "build") $versionDirectory
