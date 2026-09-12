@@ -15,6 +15,9 @@ describe("Codex-native Skill contract", () => {
       "workspace_info",
       "markHandoff",
       "markDeliverable",
+      "defaultTunnelMode",
+      "defaultTunnelZone",
+      "c2c prefs --json",
     ]) {
       expect(normalizedSkill).toContain(phrase);
     }

@@ -244,9 +244,9 @@ Resolve the connection in this order, before the public address exists
 1. workspace-specific state (`c2c tunnel choose`, including an explicit
    quick/named choice and custom domain);
 2. machine-local override (`c2c prefs set --tunnel-override ...`);
-3. the TeamAI-applied machine default (`c2c prefs --json`, currently
-   `setupMode: auto`, `defaultTunnelMode: named`,
-   `defaultTunnelZone: aristocrats.win`);
+3. the TeamAI-applied machine default reported by `c2c prefs --json` (the
+   `defaultTunnelMode`/`defaultTunnelZone` fields; the current TeamAI policy
+   is `setupMode: auto` with named mode and its public default zone);
 4. interactive choice only when none of the above is configured.
 
 Run `c2c tunnel status -w <workspace> --json` first. If `needsChoice` is
