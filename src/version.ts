@@ -1,3 +1,3 @@
-export const VERSION = "0.1.3-svl.4";
+export const VERSION = "0.1.3-svl.5";
 export const SERVICE_NAME = "c2c-bridge";
 export const PRODUCT_NAME = "Codex with ChatGPT";

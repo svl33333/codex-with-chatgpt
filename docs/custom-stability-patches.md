@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Baseline commit: `8fdd97c188c7678d0d9c43b3769b426940de568a`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.4`
+- Custom version: `0.1.3-svl.5`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -29,7 +29,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | Conversation identity | `src/conversation/registry.ts` | Project, conversation, repository, work, stage, and role are bound together; mismatches fail closed. |
 | Endpoint metadata | `src/config/endpoint.ts`, `src/cli/index.ts` | Endpoint mode, fingerprint, repository, installation, and connector identity are persisted alongside existing endpoint state. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
-| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1` | A pinned ref is cloned, built with the frozen lockfile, and selected only after a successful build. |
+| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
 
 These modules are adapter-level foundations. The upstream browser workflow
 still performs the user-facing connector operation; callers should use the
@@ -80,6 +80,8 @@ stay outside the repository and are not exercised by CI.
 5. Run `scripts/update-custom-c2c.ps1 -Ref <tag>`; it builds a new version
    directory and advances the user-local manifest only after verification.
 
-The TeamAI repository distributes this policy, the skill, and the scripts as
-control-plane material. It does not contain this runtime's `node_modules`,
+The TeamAI repository distributes the policy, Codex-only installer, and
+bootstrap/update wrappers as control-plane material. The executable Skill
+remains in this runtime repository and is never copied into TeamAI's generic
+`skills/` directory. TeamAI does not contain this runtime's `node_modules`,
 credentials, endpoint URLs, or full source tree.
