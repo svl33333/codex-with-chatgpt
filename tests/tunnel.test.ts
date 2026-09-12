@@ -445,4 +445,26 @@ describe("tunnel preference state", () => {
     expect(result.state.preference).toBe("unset");
     expect(result.error).toMatch(/named API unavailable/);
   });
+
+  it("keeps Cloudflare authentication as HUMAN_WAITING instead of using Quick", async () => {
+    const account: CloudflaredAccount = {
+      hasCert: () => false,
+      login: async () => {
+        throw new Error("login required");
+      },
+      listTunnels: async () => [],
+      createTunnel: async () => ({ id: "unused", name: "unused" }),
+      routeDns: async () => undefined,
+    };
+    const result = await provisionNamedTunnel({
+      workspaceId: "ws9",
+      workspaceName: "Demo",
+      zone: "example.com",
+      allowQuickFallback: true,
+      account,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.fallback).toBe(false);
+    expect(result.error).toMatch(/NEED_CLOUDFLARE_LOGIN/);
+  });
 });

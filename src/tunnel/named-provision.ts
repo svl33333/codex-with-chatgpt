@@ -214,6 +214,17 @@ export async function provisionNamedTunnel(opts: {
   const tunnelName = `c2c-${opts.workspaceId}`;
   try {
     if (!account.hasCert()) await account.login();
+  } catch (error) {
+    // Authentication is a HUMAN_WAITING boundary, never a reason to silently
+    // downgrade a named policy to Quick.
+    return {
+      ok: false,
+      fallback: false,
+      state: readTunnelState(opts.workspaceId),
+      error: `NEED_CLOUDFLARE_LOGIN: ${(error as Error).message}`,
+    };
+  }
+  try {
     const tunnel = await account.createTunnel(tunnelName);
     await account.routeDns(tunnel.name, hostname);
     const state = writeTunnelState({

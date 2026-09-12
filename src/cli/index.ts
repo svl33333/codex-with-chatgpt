@@ -239,7 +239,11 @@ async function applyResolvedTunnelSelection(workspaceRoot: string): Promise<{ ch
     allowQuickFallback: selection.source === "teamai" || selection.source === "machine",
   });
   if (!result.ok && !result.fallback) {
-    throw new Error(`NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`);
+    throw new Error(
+      result.error?.startsWith("NEED_CLOUDFLARE_LOGIN")
+        ? result.error
+        : `NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`
+    );
   }
   return { changed: !result.fallback };
 }
@@ -1379,7 +1383,11 @@ tunnelCmd
         allowQuickFallback: true,
       });
       if (!result.ok && !result.fallback) {
-        throw new Error(`NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`);
+        throw new Error(
+          result.error?.startsWith("NEED_CLOUDFLARE_LOGIN")
+            ? result.error
+            : `NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`
+        );
       }
       if (await findLiveBridge(workspace.id)) await stopBridge(root);
       const payload = {
