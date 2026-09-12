@@ -30,6 +30,12 @@ whatever data it needs by itself.
 4. If something fails, run `c2c doctor` and repair silently. Only involve the user
    for logins, CAPTCHA, 2FA, explicit consent screens, or **guided manual
    ChatGPT setup** below — and then give them ONE action.
+   An explicit C2C request (for example, “C2Cを使って…” or “C2CでChatGPTに
+   レビューさせて…”) is comprehensive permission for the normal, non-destructive
+   setup operations required by this Skill. When `setupMode: auto` and the
+   connection policy/ownership/identity are resolved, do not add conversation
+   confirmations for named tunnel provision, connector create/submit/Connect,
+   Authorize, pairing, workspace verification, or starting the bounded task.
    Before the first ChatGPT connection on this machine, `c2c prefs --json`:
    - `setupMode` missing: tell the user exactly `setupChoicePrompt`, wait for
      「1」or「2」, then `c2c prefs set --setup-mode auto|manual --json`.
@@ -252,6 +258,10 @@ Resolve the connection in this order, before the public address exists
 Run `c2c tunnel status -w <workspace> --json` first. If `needsChoice` is
 false, do not ask again. For a TeamAI or machine default, `c2c setup` applies
 it automatically; do not call `c2c tunnel choose` merely to repeat the choice.
+The status result is the resolved connection policy and must be obtained before
+starting a public or local connection. If it resolves `named` with a zone,
+normal first-time setup must not pass `--no-tunnel`, must not start a local-only
+bridge as an intermediate state, and must not try a Quick Tunnel first.
 If the resolved mode is named but Cloudflare is not authenticated, enter
 `HUMAN_WAITING`, tell the user exactly `loginPrompt`, and resume the same setup
 after they finish login. The CLI stores only the local credential and live
@@ -261,9 +271,24 @@ If `needsChoice` is true, tell the user exactly `userPrompt` and wait. A
 manual quick choice uses `c2c tunnel choose -w <ws> --mode quick --json`; a
 manual named choice first tells them `loginPrompt`, then uses
 `c2c tunnel choose -w <ws> --mode named --zone <domain> --json`. If named
-provisioning has a clear failure, accept the reported temporary fallback for
-that run; the fallback is marked local-only and the named default is retried
-later. Never change the TeamAI default or put credentials in the project.
+provisioning has a real, clearly reported failure, use Quick only when the
+resolved policy explicitly permits fallback for that run. Mark it local-only,
+keep the TeamAI/workspace named policy unchanged, and retry named on the next
+start. Never use Quick merely because a local bridge cannot yet be reached.
+
+### Confirmation and HUMAN_WAITING boundary
+
+For `setupMode: auto` with a resolved policy and verified ownership/identity,
+the explicit C2C invocation itself authorizes the normal non-destructive
+workflow. Do not ask “作成してよい”, “一時接続を許可”, “起動してよい”, or
+“作成するを押してよい” between these steps.
+
+`HUMAN_WAITING` is reserved for ChatGPT/Cloudflare login, CAPTCHA, 2FA, an
+actual service-side explicit-consent screen, ownership or connector-identity
+ambiguity, destructive risk, an unset policy that genuinely needs the user's
+choice, or the documented two-failure transition to guided manual setup. A
+connector create, tunnel provision, pairing, browser action, or form submit by
+itself is never a HUMAN_WAITING reason.
 
 ## Workflow: first-time setup（"使用 Codex with ChatGPT 完成首次配置"）
 
@@ -271,8 +296,10 @@ later. Never change the TeamAI default or put credentials in the project.
    - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
      `winget install Cloudflare.cloudflared`. Do this yourself; don't ask.
 2. If the c2c repo has no `node_modules`, run `pnpm install && pnpm build` in it.
-3. Run `c2c sandbox-allow --json`, then **Connection choice**, then
-   `c2c setup -w <workspace> --json`.
+3. First run `c2c tunnel status -w <workspace> --json` and resolve the
+   connection policy. If `needsChoice` is true, stop for the one required user
+   choice; otherwise continue without reconfirming it. Then run
+   `c2c sandbox-allow --json` and `c2c setup -w <workspace> --json`.
    `sandbox-allow` edits Codex `config.toml` only — it adds C2C's state directory
    to `[sandbox_workspace_write].writable_roots` so later chats can write logs
    without elevation. If the write is denied, request approval and retry once.
@@ -302,13 +329,19 @@ later. Never change the TeamAI default or put credentials in the project.
      Never record it as off. If creating the connector later says developer
      mode is required, open this page, enable it, save `--developer-mode`,
      and retry create — do not skip that recovery.
-   - 已有该 `connectorName`: `https://chatgpt.com/plugins` — Delete it (never
-     Reconnect). Then `goto` the 加插件 URL below.
-   - 还没有 / 刚删掉: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
+   - 已有该 `connectorName`: `https://chatgpt.com/plugins` — reuse it in place.
+     Verify its workspace identity with `workspace_info`; do not Delete or
+     Reconnect a healthy matching connector. Only an explicit
+     `connectorAction: "update"` for a changed endpoint may delete this
+     workspace's owned connector before recreating it.
+   - 还没有 / 已确认需要 update: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
      Operate ONLY on `connectorName` from step 3:
-      - If that exact name exists: Delete it, then create it again. Never
-        Reconnect, never edit-in-place, never open the old Server URL.
-      - If it does not exist: create one with that exact name.
+     - If that exact name exists and the endpoint is unchanged: reuse it and
+       perform zero connector mutations, including zero pairing.
+     - If the endpoint changed and the binding proves ownership: delete it,
+       verify absence, then create it again. Never Reconnect or open the old
+       Server URL.
+     - If it does not exist: create one with that exact name.
       - Never rename, delete, or edit a connector that belongs to another workspace.
       - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
       - Server URL: the `mcpUrl` from step 3

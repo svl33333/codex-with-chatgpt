@@ -27,6 +27,19 @@ export interface ResolvedTunnelSelection {
   retryingFallback: boolean;
 }
 
+/**
+ * A first-time setup must not silently downgrade a resolved named policy to a
+ * local bridge.  Keep this check in the runtime so callers cannot accidentally
+ * reintroduce the old `--no-tunnel` -> Quick Tunnel path.
+ */
+export function validateSetupTunnelFlag(selection: ResolvedTunnelSelection, tunnelEnabled: boolean): void {
+  if (!tunnelEnabled && selection.mode === "named" && Boolean(selection.zone)) {
+    throw new Error(
+      "NAMED_TUNNEL_REQUIRED: resolved connection policy is named; first-time setup must provision/reuse the named tunnel"
+    );
+  }
+}
+
 export function tunnelStateFile(workspaceId: string): string {
   return path.join(getStateDir(), "tunnels", `${workspaceId}.json`);
 }

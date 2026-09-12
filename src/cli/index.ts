@@ -23,6 +23,7 @@ import {
   readTunnelState,
   resolveTunnelSelection,
   TUNNEL_CHOICE_PROMPT,
+  validateSetupTunnelFlag,
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
@@ -232,7 +233,14 @@ async function applyResolvedTunnelSelection(workspaceRoot: string): Promise<{ ch
     workspaceName: workspace.name,
     zone: selection.zone,
     selectionSource: selection.source,
+    // The TeamAI/machine named defaults explicitly permit a temporary local
+    // fallback after a real provisioning failure.  A workspace's explicit
+    // named choice remains fail-closed unless its caller opts in.
+    allowQuickFallback: selection.source === "teamai" || selection.source === "machine",
   });
+  if (!result.ok && !result.fallback) {
+    throw new Error(`NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`);
+  }
   return { changed: !result.fallback };
 }
 
@@ -379,6 +387,14 @@ program
         say("正在连接 ChatGPT…");
         say("");
       }
+      const workspace = new Workspace(root);
+      const state = readTunnelState(workspace.id);
+      const policy = resolveTunnelSelection(state, readUiPrefs());
+      const needsChoice = policy.mode === null || (policy.mode === "named" && !policy.zone);
+      if (needsChoice && opts.tunnel) {
+        throw new Error(`NEED_TUNNEL_CHOICE: ${TUNNEL_CHOICE_PROMPT}`);
+      }
+      validateSetupTunnelFlag(policy, opts.tunnel);
       const sandbox = trySandboxAllow();
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
       const connectorName = mcpUrl
@@ -1360,7 +1376,11 @@ tunnelCmd
         workspaceName: workspace.name,
         zone,
         hostname: opts.hostname,
+        allowQuickFallback: true,
       });
+      if (!result.ok && !result.fallback) {
+        throw new Error(`NAMED_PROVISION_FAILED: ${result.error ?? "named tunnel provisioning failed"}`);
+      }
       if (await findLiveBridge(workspace.id)) await stopBridge(root);
       const payload = {
         ...tunnelChoicePayload(workspace),
@@ -1403,6 +1423,8 @@ function handleCliError(error: unknown, json: boolean): void {
   if (json) {
     if (message.startsWith("NEED_CLOUDFLARE_LOGIN")) {
       say(JSON.stringify({ ok: false, waiting: "HUMAN_WAITING", need: "cloudflare_login", error: message }));
+    } else if (message.startsWith("NEED_TUNNEL_CHOICE")) {
+      say(JSON.stringify({ ok: false, waiting: "HUMAN_WAITING", need: "tunnel_choice", error: message }));
     } else {
       say(JSON.stringify({ ok: false, error: message }));
     }
@@ -1414,6 +1436,8 @@ function handleCliError(error: unknown, json: boolean): void {
     say("完成后再试一次即可。");
   } else if (message.startsWith("NEED_CLOUDFLARE_LOGIN")) {
     say("HUMAN_WAITING: 请在即将弹出的窗口登录 Cloudflare，完成后告诉我「好了」。");
+  } else if (message.startsWith("NEED_TUNNEL_CHOICE")) {
+    say(message.slice("NEED_TUNNEL_CHOICE: ".length));
   } else {
     cross(message);
   }

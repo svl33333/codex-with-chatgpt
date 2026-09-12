@@ -7,6 +7,7 @@ import { suggestedNamedHostname } from "./hostname.js";
 import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
 import {
   NAMED_FALLBACK_MESSAGE,
+  readTunnelState,
   writeTunnelState,
   type TunnelSelectionSource,
   type TunnelState,
@@ -191,6 +192,8 @@ export async function provisionNamedTunnel(opts: {
   zone: string;
   hostname?: string;
   selectionSource?: TunnelSelectionSource;
+  /** Quick is permitted only when the caller's resolved policy allows it. */
+  allowQuickFallback?: boolean;
   account?: CloudflaredAccount;
 }): Promise<ProvisionNamedResult> {
   const account = opts.account ?? new ProcessCloudflaredAccount();
@@ -200,7 +203,12 @@ export async function provisionNamedTunnel(opts: {
       ? normalizeNamedTunnelHostname(opts.hostname)
       : suggestedNamedHostname(opts.zone, opts.workspaceName, opts.workspaceId);
   } catch (error) {
-    return fallbackState(opts.workspaceId, "invalid_hostname", (error as Error).message);
+    return {
+      ok: false,
+      fallback: false,
+      state: readTunnelState(opts.workspaceId),
+      error: (error as Error).message,
+    };
   }
 
   const tunnelName = `c2c-${opts.workspaceId}`;
@@ -222,7 +230,14 @@ export async function provisionNamedTunnel(opts: {
     });
     return { ok: true, state, fallback: false };
   } catch (error) {
-    return fallbackState(opts.workspaceId, "provision_failed", (error as Error).message);
+    const message = (error as Error).message;
+    if (opts.allowQuickFallback) return fallbackState(opts.workspaceId, "provision_failed", message);
+    return {
+      ok: false,
+      fallback: false,
+      state: readTunnelState(opts.workspaceId),
+      error: message,
+    };
   }
 }
 

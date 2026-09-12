@@ -18,6 +18,10 @@ describe("Codex-native Skill contract", () => {
       "defaultTunnelMode",
       "defaultTunnelZone",
       "c2c prefs --json",
+      "explicit C2C request",
+      "must not pass `--no-tunnel`",
+      "zero connector mutations",
+      "A connector create, tunnel provision, pairing, browser action, or form submit by itself is never a HUMAN_WAITING reason",
     ]) {
       expect(normalizedSkill).toContain(phrase);
     }

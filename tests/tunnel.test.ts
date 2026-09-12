@@ -25,6 +25,7 @@ import {
   needsTunnelChoice,
   readTunnelState,
   resolveTunnelSelection,
+  validateSetupTunnelFlag,
 } from "../src/tunnel/state.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
@@ -345,6 +346,7 @@ describe("tunnel preference state", () => {
       workspaceId: "ws2",
       workspaceName: "Demo",
       zone: "example.com",
+      allowQuickFallback: true,
       account,
     }).then((result) => {
       expect(result.fallback).toBe(true);
@@ -406,5 +408,41 @@ describe("tunnel preference state", () => {
       }
     );
     expect(resolved).toMatchObject({ mode: "named", zone: "aristocrats.win", retryingFallback: true });
+  });
+
+  it("rejects --no-tunnel when a named policy is already resolved", () => {
+    const selection = resolveTunnelSelection(
+      { workspaceId: "ws7", preference: "unset" },
+      {
+        defaultTunnelMode: "named",
+        defaultTunnelZone: "aristocrats.win",
+        tunnelModeOverride: null,
+        tunnelZoneOverride: null,
+      }
+    );
+    expect(() => validateSetupTunnelFlag(selection, false)).toThrow(/NAMED_TUNNEL_REQUIRED/);
+    expect(() => validateSetupTunnelFlag(selection, true)).not.toThrow();
+  });
+
+  it("fails closed instead of falling back when the caller has not allowed Quick", async () => {
+    const account: CloudflaredAccount = {
+      hasCert: () => true,
+      login: async () => undefined,
+      listTunnels: async () => [],
+      createTunnel: async () => {
+        throw new Error("named API unavailable");
+      },
+      routeDns: async () => undefined,
+    };
+    const result = await provisionNamedTunnel({
+      workspaceId: "ws8",
+      workspaceName: "Demo",
+      zone: "example.com",
+      account,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.fallback).toBe(false);
+    expect(result.state.preference).toBe("unset");
+    expect(result.error).toMatch(/named API unavailable/);
   });
 });
