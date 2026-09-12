@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$Repository = "https://github.com/svl33333/codex-with-chatgpt.git",
-  [string]$Ref = "v0.1.3-svl.3",
+  [string]$Ref = "v0.1.3-svl.4",
   [string]$InstallRoot = "$(Join-Path $env:LOCALAPPDATA 'codex-with-chatgpt-runtime')"
 )
 
