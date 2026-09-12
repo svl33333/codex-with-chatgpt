@@ -23,6 +23,10 @@ describe("ui prefs", () => {
     const prefs = readUiPrefs();
     expect(prefs.developerModeEnabled).toBe(false);
     expect(prefs.setupMode).toBeNull();
+    expect(prefs.defaultTunnelMode).toBeNull();
+    expect(prefs.defaultTunnelZone).toBeNull();
+    expect(prefs.tunnelModeOverride).toBeNull();
+    expect(prefs.tunnelZoneOverride).toBeNull();
     expect(prefs.remembered).toEqual({ developerMode: false, setupMode: false });
     expect(prefs.setupChoicePrompt).toBe(SETUP_CHOICE_PROMPT);
     expect(prefs.setupChoicePrompt).toContain("AI 自动化配置（预览版）");
@@ -67,5 +71,27 @@ describe("ui prefs", () => {
     expect(readUiPrefs().developerModeEnabled).toBe(false);
     expect(readUiPrefs().remembered.developerMode).toBe(false);
     expect(readUiPrefs().setupMode).toBe("auto");
+  });
+
+  it("stores public tunnel defaults and machine overrides without credentials", () => {
+    dirs.push(isolateStateDir());
+    const saved = mergeUiPrefs({
+      setupMode: "auto",
+      defaultTunnelMode: "named",
+      defaultTunnelZone: "https://aristocrats.win/",
+      tunnelModeOverride: "quick",
+    });
+    expect(saved.defaultTunnelMode).toBe("named");
+    expect(saved.defaultTunnelZone).toBe("aristocrats.win");
+    expect(saved.tunnelModeOverride).toBe("quick");
+    const raw = fs.readFileSync(prefsFile(), "utf8");
+    expect(raw).toContain("aristocrats.win");
+    expect(raw).not.toMatch(/token|credential|cookie|pairing|secret/i);
+  });
+
+  it("rejects invalid tunnel defaults", () => {
+    dirs.push(isolateStateDir());
+    expect(() => mergeUiPrefs({ defaultTunnelMode: "manual" as "named" })).toThrow(/default-tunnel/);
+    expect(() => mergeUiPrefs({ defaultTunnelZone: "not a hostname" })).toThrow(/default-tunnel-zone/);
   });
 });

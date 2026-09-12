@@ -67,14 +67,13 @@ whether the occupant is a c2c bridge for the same workspace (reuse) or not
 (fall back to an ephemeral port). Configuration follows automatically via the
 runtime state file; users never see ports.
 
-**Tunnel**: default is a Cloudflare Quick Tunnel (`cloudflared tunnel --url …`).
-The URL changes per start, so `c2c doctor` can restart it and tell the Skill to
-Delete + recreate that workspace's ChatGPT connector. A workspace may instead
-choose a named hostname once (`c2c tunnel choose --mode named`). The Skill asks
-before the first public URL exists; `cloudflared tunnel login` is the only extra
-user step. Tunnel name, hostname and preference live under the OS state dir
-(`tunnels/<workspaceId>.json`), never in the project. Named starts use
-`cloudflared tunnel --url … run <name>` so the public URL stays stable. If named
-provisioning fails, C2C falls back to Quick Tunnel. If a named tunnel later
-drops, doctor asks for a Cloudflare re-login (`namedRepair`) instead of
-rotating the ChatGPT connector.
+**Tunnel**: the resolved order is workspace state, machine override, the
+TeamAI-applied machine default, then an interactive choice. The current TeamAI
+default is named mode in `aristocrats.win`; a new workspace therefore derives
+`c2c-<workspace>.aristocrats.win` without asking. The URL stays stable across
+starts. Tunnel name, hostname and preference live under the OS state dir
+(`tunnels/<workspaceId>.json`), never in the project. Cloudflare credentials
+remain on the machine. A missing login is a HUMAN_WAITING step; a clear named
+provisioning failure uses a local Quick fallback and retains a retry marker so
+the named default is attempted again later. Existing explicit quick/named
+workspace state is never migrated by a TeamAI default.

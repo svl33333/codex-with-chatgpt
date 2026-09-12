@@ -1,7 +1,9 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import type { TunnelMode, UiPrefsView } from "../config/ui-prefs.js";
 
 export type TunnelPreference = "unset" | "quick" | "named";
+export type TunnelSelectionSource = "workspace" | "machine" | "teamai" | "interactive" | "fallback";
 
 export interface TunnelState {
   workspaceId: string;
@@ -14,6 +16,15 @@ export interface TunnelState {
   zone?: string;
   configuredAt?: string;
   fallbackReason?: string;
+  /** Where the current preference came from; absent means legacy workspace state. */
+  selectionSource?: TunnelSelectionSource;
+}
+
+export interface ResolvedTunnelSelection {
+  mode: TunnelMode | null;
+  zone: string | null;
+  source: TunnelSelectionSource | "interactive";
+  retryingFallback: boolean;
 }
 
 export function tunnelStateFile(workspaceId: string): string {
@@ -36,6 +47,50 @@ export function writeTunnelState(state: TunnelState): TunnelState {
 
 export function needsTunnelChoice(state: TunnelState): boolean {
   return state.preference === "unset" || !state.askedAt;
+}
+
+/** Resolve workspace > machine override > TeamAI default > interactive. */
+export function resolveTunnelSelection(state: TunnelState, prefs: Pick<
+  UiPrefsView,
+  "defaultTunnelMode" | "defaultTunnelZone" | "tunnelModeOverride" | "tunnelZoneOverride"
+>): ResolvedTunnelSelection {
+  const legacyOrWorkspace =
+    state.preference !== "unset" &&
+    Boolean(state.askedAt) &&
+    (state.selectionSource === undefined || state.selectionSource === "workspace" || state.selectionSource === "interactive");
+  if (legacyOrWorkspace) {
+    return {
+      mode: state.preference === "quick" || state.preference === "named" ? state.preference : null,
+      zone: state.preference === "named" ? state.zone ?? null : null,
+      source: state.selectionSource === "interactive" ? "interactive" : "workspace",
+      retryingFallback: false,
+    };
+  }
+
+  if (prefs.tunnelModeOverride) {
+    return {
+      mode: prefs.tunnelModeOverride,
+      zone: prefs.tunnelModeOverride === "named" ? prefs.tunnelZoneOverride ?? prefs.defaultTunnelZone : null,
+      source: "machine",
+      retryingFallback: state.selectionSource === "fallback",
+    };
+  }
+
+  if (prefs.defaultTunnelMode) {
+    return {
+      mode: prefs.defaultTunnelMode,
+      zone: prefs.defaultTunnelMode === "named" ? prefs.defaultTunnelZone : null,
+      source: "teamai",
+      retryingFallback: state.selectionSource === "fallback",
+    };
+  }
+
+  return {
+    mode: null,
+    zone: null,
+    source: "interactive",
+    retryingFallback: false,
+  };
 }
 
 export function isNamedTunnelReady(state: TunnelState): boolean {

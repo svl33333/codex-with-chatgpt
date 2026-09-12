@@ -20,14 +20,21 @@ import {
   isNamedTunnelReady,
   NAMED_LOGIN_PROMPT,
   NAMED_REPAIR_MESSAGE,
-  needsTunnelChoice,
   readTunnelState,
+  resolveTunnelSelection,
   TUNNEL_CHOICE_PROMPT,
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
-import { mergeUiPrefs, readUiPrefs, SETUP_MODES, type SetupMode } from "../config/ui-prefs.js";
+import {
+  mergeUiPrefs,
+  readUiPrefs,
+  SETUP_MODES,
+  TUNNEL_MODES,
+  type SetupMode,
+  type TunnelMode,
+} from "../config/ui-prefs.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
   CHATGPT_DEVELOPER_MODE_URL,
@@ -167,20 +174,66 @@ function persistWorkspaceEndpoint(opts: {
 
 function tunnelChoicePayload(workspace: Workspace, zoneHint?: string): Record<string, unknown> {
   const state = readTunnelState(workspace.id);
-  const zone = parseZoneInput(zoneHint ?? "") ?? state.zone ?? null;
+  const selection = resolveTunnelSelection(state, readUiPrefs());
+  const zone = parseZoneInput(zoneHint ?? "") ?? selection.zone ?? state.zone ?? null;
+  const needsChoice = selection.mode === null || (selection.mode === "named" && !zone);
   return {
     ok: true,
-    needsChoice: needsTunnelChoice(state),
+    needsChoice,
     preference: state.preference,
+    resolvedMode: selection.mode,
+    resolvedSource: selection.source,
     loggedIn: hasCloudflaredCert(),
     namedReady: isNamedTunnelReady(state),
     zone,
     hostname: state.hostname ?? null,
     suggestedHostname: zone ? suggestedNamedHostname(zone, workspace.name, workspace.id) : null,
-    userPrompt: needsTunnelChoice(state) ? TUNNEL_CHOICE_PROMPT : undefined,
+    userPrompt: needsChoice ? TUNNEL_CHOICE_PROMPT : undefined,
     loginPrompt: NAMED_LOGIN_PROMPT,
     fallbackReason: state.fallbackReason,
   };
+}
+
+/** Apply the resolved machine/TeamAI default before a bridge is started. */
+async function applyResolvedTunnelSelection(workspaceRoot: string): Promise<{ changed: boolean }> {
+  const workspace = new Workspace(workspaceRoot);
+  const previous = readTunnelState(workspace.id);
+  const selection = resolveTunnelSelection(previous, readUiPrefs());
+  if (!selection.mode) return { changed: false };
+
+  if (selection.mode === "quick") {
+    const alreadySelected =
+      previous.preference === "quick" &&
+      previous.selectionSource === selection.source &&
+      !previous.fallbackReason;
+    if (alreadySelected) return { changed: false };
+    chooseQuickTunnel(workspace.id, undefined, selection.source);
+    return { changed: previous.preference !== "quick" || previous.selectionSource !== selection.source };
+  }
+
+  if (!selection.zone) return { changed: false };
+  if (
+    isNamedTunnelReady(previous) &&
+    previous.zone === selection.zone &&
+    (previous.selectionSource === selection.source || previous.selectionSource === undefined || previous.selectionSource === "workspace")
+  ) {
+    return { changed: false };
+  }
+  if (!hasCloudflaredCert()) {
+    if (!detectTunnelBinaries().cloudflared) {
+      throw new Error(
+        "NEED_CLOUDFLARED: cloudflared is not installed. Install it first (macOS: brew install cloudflared)."
+      );
+    }
+    throw new Error(`NEED_CLOUDFLARE_LOGIN: ${NAMED_LOGIN_PROMPT}`);
+  }
+  const result = await provisionNamedTunnel({
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    zone: selection.zone,
+    selectionSource: selection.source,
+  });
+  return { changed: !result.fallback };
 }
 
 function trySandboxAllow():
@@ -222,6 +275,13 @@ async function ensureBridgeAndTunnel(
   workspaceRoot: string,
   opts: { tunnel: boolean }
 ): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null }> {
+  if (opts.tunnel) {
+    const selection = await applyResolvedTunnelSelection(workspaceRoot);
+    if (selection.changed) {
+      const workspace = new Workspace(workspaceRoot);
+      if (await findLiveBridge(workspace.id)) await stopBridge(workspaceRoot);
+    }
+  }
   const { runtime } = await ensureBridge(workspaceRoot);
   let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
   let mcpUrl: string | null = info.publicUrl ? `${info.publicUrl}/mcp` : null;
@@ -1074,11 +1134,11 @@ session
 
 const prefsCmd = program
   .command("prefs")
-  .description("Remember ChatGPT developer mode and setup choice for this machine");
+  .description("Remember ChatGPT and C2C setup choices for this machine");
 
 prefsCmd
   .command("get", { isDefault: true })
-  .description("Show remembered ChatGPT setup choices (not per workspace)")
+  .description("Show remembered ChatGPT and C2C setup choices (not per workspace)")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
     const prefs = readUiPrefs();
@@ -1090,26 +1150,62 @@ prefsCmd
     if (prefs.setupMode === "auto") say("配置方式：AI 自动化配置（预览版）");
     else if (prefs.setupMode === "manual") say("配置方式：手动教学配置");
     else say("配置方式：尚未选择");
+    if (prefs.defaultTunnelMode) say(`安全连接默认：${prefs.defaultTunnelMode}`);
+    if (prefs.defaultTunnelZone) say(`安全连接默认域名：${prefs.defaultTunnelZone}`);
+    if (prefs.tunnelModeOverride) say(`本机覆盖：${prefs.tunnelModeOverride}`);
+    if (prefs.tunnelZoneOverride) say(`本机覆盖域名：${prefs.tunnelZoneOverride}`);
   });
 
 prefsCmd
   .command("set")
-  .description("Save a ChatGPT setup choice for this machine")
+  .description("Save ChatGPT and C2C setup choices for this machine")
   .option("--developer-mode", "remember that ChatGPT developer mode is on", false)
   .option("--setup-mode <mode>", "auto (preview) or manual")
+  .option("--default-tunnel <mode>", "default secure connection: quick or named")
+  .option("--default-tunnel-zone <domain>", "default Cloudflare domain for named connections")
+  .option("--tunnel-override <mode>", "machine-only override: quick or named")
+  .option("--tunnel-override-zone <domain>", "machine-only domain override for named connections")
   .option("--json", "machine-readable output", false)
-  .action((opts: { developerMode: boolean; setupMode?: string; json: boolean }) => {
+  .action(
+    (opts: {
+      developerMode: boolean;
+      setupMode?: string;
+      defaultTunnel?: string;
+      defaultTunnelZone?: string;
+      tunnelOverride?: string;
+      tunnelOverrideZone?: string;
+      json: boolean;
+    }) => {
     try {
       const modeRaw = opts.setupMode?.trim().toLowerCase();
       if (modeRaw && !SETUP_MODES.includes(modeRaw as SetupMode)) {
         throw new Error(`setup-mode must be one of ${SETUP_MODES.join(", ")}`);
       }
-      if (!opts.developerMode && !modeRaw) {
+      const defaultTunnelRaw = opts.defaultTunnel?.trim().toLowerCase();
+      if (defaultTunnelRaw && !TUNNEL_MODES.includes(defaultTunnelRaw as TunnelMode)) {
+        throw new Error(`default-tunnel must be one of ${TUNNEL_MODES.join(", ")}`);
+      }
+      const tunnelOverrideRaw = opts.tunnelOverride?.trim().toLowerCase();
+      if (tunnelOverrideRaw && !TUNNEL_MODES.includes(tunnelOverrideRaw as TunnelMode)) {
+        throw new Error(`tunnel-override must be one of ${TUNNEL_MODES.join(", ")}`);
+      }
+      if (
+        !opts.developerMode &&
+        !modeRaw &&
+        !defaultTunnelRaw &&
+        opts.defaultTunnelZone === undefined &&
+        !tunnelOverrideRaw &&
+        opts.tunnelOverrideZone === undefined
+      ) {
         throw new Error("nothing to save: pass --developer-mode and/or --setup-mode");
       }
       const prefs = mergeUiPrefs({
         developerModeEnabled: opts.developerMode ? true : undefined,
         setupMode: modeRaw as SetupMode | undefined,
+        defaultTunnelMode: defaultTunnelRaw as TunnelMode | undefined,
+        defaultTunnelZone: opts.defaultTunnelZone,
+        tunnelModeOverride: tunnelOverrideRaw as TunnelMode | undefined,
+        tunnelZoneOverride: opts.tunnelOverrideZone,
       });
       if (opts.json) {
         say(JSON.stringify({ ok: true, ...prefs }));
@@ -1118,10 +1214,15 @@ prefsCmd
       if (opts.developerMode) check("已记住开发人员模式已开启");
       if (modeRaw === "auto") check("已记住配置方式：AI 自动化配置（预览版）");
       if (modeRaw === "manual") check("已记住配置方式：手动教学配置");
+      if (defaultTunnelRaw) check(`已记住安全连接默认：${defaultTunnelRaw}`);
+      if (opts.defaultTunnelZone !== undefined) check(`已记住安全连接默认域名：${prefs.defaultTunnelZone}`);
+      if (tunnelOverrideRaw) check(`已记住本机安全连接覆盖：${tunnelOverrideRaw}`);
+      if (opts.tunnelOverrideZone !== undefined) check(`已记住本机安全连接覆盖域名：${prefs.tunnelZoneOverride}`);
     } catch (error) {
       handleCliError(error, opts.json);
     }
-  });
+    }
+  );
 
 program
   .command("record", { hidden: true })
@@ -1300,13 +1401,19 @@ tunnelCmd
 function handleCliError(error: unknown, json: boolean): void {
   const message = error instanceof Error ? error.message : String(error);
   if (json) {
-    say(JSON.stringify({ ok: false, error: message }));
+    if (message.startsWith("NEED_CLOUDFLARE_LOGIN")) {
+      say(JSON.stringify({ ok: false, waiting: "HUMAN_WAITING", need: "cloudflare_login", error: message }));
+    } else {
+      say(JSON.stringify({ ok: false, error: message }));
+    }
   } else if (message.startsWith("NEED_CLOUDFLARED")) {
     say("需要你完成一步：");
     say("");
     say("尚未安装安全连接组件 cloudflared。");
     say("macOS 用户可运行：brew install cloudflared");
     say("完成后再试一次即可。");
+  } else if (message.startsWith("NEED_CLOUDFLARE_LOGIN")) {
+    say("HUMAN_WAITING: 请在即将弹出的窗口登录 Cloudflare，完成后告诉我「好了」。");
   } else {
     cross(message);
   }

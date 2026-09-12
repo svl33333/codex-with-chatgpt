@@ -236,27 +236,34 @@ Then run `c2c-svl sandbox-allow --json`, restart the bridge for the workspace,
 and run `c2c-svl update-check --force --json`. The updated Skill is distributed
 by TeamAI; it takes effect in the next agent session.
 
-## Connection choice (once per workspace)
+## Connection choice and default resolution
 
-Ask this **before** the public address exists (`c2c setup` / first `doctor --fix`
-that starts a tunnel). Do not mention tunnels, wrangler, DNS, or hostnames.
-Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
+Resolve the connection in this order, before the public address exists
+(`c2c setup` / first `doctor --fix` that starts a connection):
 
-1. `c2c tunnel status -w <workspace> --json`
-2. If `needsChoice` is false: do not ask again.
-3. If `needsChoice` is true: tell the user exactly `userPrompt` and wait.
-   - 没有账号 / 没有域名 / 临时 / 不用 →
-     `c2c tunnel choose -w <ws> --mode quick --json`
-   - 有域名（例如 example.com）→ first tell them `loginPrompt`, then
-     `c2c tunnel choose -w <ws> --mode named --zone <domain> --json`.
-     This may open the user's own browser (the Cloudflare exception in
-     Golden rule 5). Wait until the command finishes.
-     If they said they have an account but gave no domain: ask once for the
-     domain. If the command returns `need: "zone"`, ask once and retry.
-     If `fallback` is true: tell them `userMessage` and continue on the
-     temporary address. Do not retry named unless they ask.
-4. Never put connection credentials in the project. The CLI stores them in
-   the C2C state directory.
+1. workspace-specific state (`c2c tunnel choose`, including an explicit
+   quick/named choice and custom domain);
+2. machine-local override (`c2c prefs set --tunnel-override ...`);
+3. the TeamAI-applied machine default (`c2c prefs --json`, currently
+   `setupMode: auto`, `defaultTunnelMode: named`,
+   `defaultTunnelZone: aristocrats.win`);
+4. interactive choice only when none of the above is configured.
+
+Run `c2c tunnel status -w <workspace> --json` first. If `needsChoice` is
+false, do not ask again. For a TeamAI or machine default, `c2c setup` applies
+it automatically; do not call `c2c tunnel choose` merely to repeat the choice.
+If the resolved mode is named but Cloudflare is not authenticated, enter
+`HUMAN_WAITING`, tell the user exactly `loginPrompt`, and resume the same setup
+after they finish login. The CLI stores only the local credential and live
+tunnel state in the C2C state directory.
+
+If `needsChoice` is true, tell the user exactly `userPrompt` and wait. A
+manual quick choice uses `c2c tunnel choose -w <ws> --mode quick --json`; a
+manual named choice first tells them `loginPrompt`, then uses
+`c2c tunnel choose -w <ws> --mode named --zone <domain> --json`. If named
+provisioning has a clear failure, accept the reported temporary fallback for
+that run; the fallback is marked local-only and the named default is retried
+later. Never change the TeamAI default or put credentials in the project.
 
 ## Workflow: first-time setup（"使用 Codex with ChatGPT 完成首次配置"）
 
@@ -527,7 +534,8 @@ All control messages start with `[C2C]`. Keep Codex→ChatGPT messages under 1 K
 ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/protocol.md`.
 
 0. `c2c tunnel status -w <workspace> --json`. If `needsChoice`, follow
-   **Connection choice** first (existing installs: ask once, then remember).
+   **Connection choice and default resolution** first (existing installs: ask
+   once, then remember). Otherwise let `c2c setup` apply the resolved default.
    Then `c2c doctor -w <workspace> --json` (auto-repairs). **Doctor gate:** if local
    is not green, do not open ChatGPT and do not send INIT. If
    `namedRepair.needed` is true, tell the user `namedRepair.userMessage`, run

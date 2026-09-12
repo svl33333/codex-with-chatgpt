@@ -20,7 +20,12 @@ import {
   type CloudflaredAccount,
 } from "../src/tunnel/named-provision.js";
 import { resolveTunnelProtocol, tunnelProtocolArgs } from "../src/tunnel/protocol.js";
-import { isNamedTunnelReady, needsTunnelChoice, readTunnelState } from "../src/tunnel/state.js";
+import {
+  isNamedTunnelReady,
+  needsTunnelChoice,
+  readTunnelState,
+  resolveTunnelSelection,
+} from "../src/tunnel/state.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
 const stateDirs: string[] = [];
@@ -346,5 +351,60 @@ describe("tunnel preference state", () => {
       expect(result.state.preference).toBe("quick");
       expect(result.userMessage).toMatch(/临时地址/);
     });
+  });
+
+  it("resolves TeamAI named defaults without an interactive choice", () => {
+    const resolved = resolveTunnelSelection(
+      { workspaceId: "ws3", preference: "unset" },
+      {
+        defaultTunnelMode: "named",
+        defaultTunnelZone: "aristocrats.win",
+        tunnelModeOverride: null,
+        tunnelZoneOverride: null,
+      }
+    );
+    expect(resolved).toEqual({
+      mode: "named",
+      zone: "aristocrats.win",
+      source: "teamai",
+      retryingFallback: false,
+    });
+  });
+
+  it("prefers workspace and machine overrides over the TeamAI default", () => {
+    const prefs = {
+      defaultTunnelMode: "named" as const,
+      defaultTunnelZone: "aristocrats.win",
+      tunnelModeOverride: "quick" as const,
+      tunnelZoneOverride: null,
+    };
+    expect(
+      resolveTunnelSelection(
+        { workspaceId: "ws4", preference: "quick", askedAt: "now" },
+        prefs
+      ).source
+    ).toBe("workspace");
+    expect(
+      resolveTunnelSelection({ workspaceId: "ws5", preference: "unset" }, prefs)
+    ).toMatchObject({ mode: "quick", source: "machine" });
+  });
+
+  it("retries a named TeamAI default after a temporary fallback", () => {
+    const resolved = resolveTunnelSelection(
+      {
+        workspaceId: "ws6",
+        preference: "quick",
+        askedAt: "now",
+        fallbackReason: "provision_failed",
+        selectionSource: "fallback",
+      },
+      {
+        defaultTunnelMode: "named",
+        defaultTunnelZone: "aristocrats.win",
+        tunnelModeOverride: null,
+        tunnelZoneOverride: null,
+      }
+    );
+    expect(resolved).toMatchObject({ mode: "named", zone: "aristocrats.win", retryingFallback: true });
   });
 });

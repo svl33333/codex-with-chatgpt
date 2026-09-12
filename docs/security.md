@@ -42,9 +42,13 @@ Access tokens: 1 hour. Refresh tokens: 30 days, rotated. All tokens bound to
 
 State lives under the OS-convention app dir
 (`~/Library/Application Support/codex-with-chatgpt` on macOS), directories 0700,
-files 0600. Named-hostname preference and tunnel metadata live there too
-(`tunnels/<workspaceId>.json`) — never in the project. Only SHA-256 hashes of
-tokens are persisted — a stolen state file does not yield usable bearer tokens.
+files 0600. Machine defaults/overrides are public policy values in `prefs.json`;
+named-hostname preference and tunnel metadata live there too
+(`tunnels/<workspaceId>.json`) — never in the project. Cloudflare certificates,
+installation identity, connector tokens, pairing codes, cookies, and live
+endpoint state remain machine/workspace local and are never copied to TeamAI.
+Only SHA-256 hashes of tokens are persisted — a stolen state file does not yield
+usable bearer tokens.
 
 **V1 limitation**: client registrations and token hashes are file-based rather
 than OS-keychain-based. Raw tokens are never written anywhere. Keychain

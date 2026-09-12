@@ -8,6 +8,7 @@ import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
 import {
   NAMED_FALLBACK_MESSAGE,
   writeTunnelState,
+  type TunnelSelectionSource,
   type TunnelState,
 } from "./state.js";
 
@@ -189,6 +190,7 @@ export async function provisionNamedTunnel(opts: {
   workspaceName: string;
   zone: string;
   hostname?: string;
+  selectionSource?: TunnelSelectionSource;
   account?: CloudflaredAccount;
 }): Promise<ProvisionNamedResult> {
   const account = opts.account ?? new ProcessCloudflaredAccount();
@@ -216,6 +218,7 @@ export async function provisionNamedTunnel(opts: {
       hostname,
       zone: normalizeNamedTunnelHostname(opts.zone),
       configuredAt: new Date().toISOString(),
+      selectionSource: opts.selectionSource ?? "workspace",
     });
     return { ok: true, state, fallback: false };
   } catch (error) {
@@ -223,18 +226,25 @@ export async function provisionNamedTunnel(opts: {
   }
 }
 
-export function chooseQuickTunnel(workspaceId: string, fallbackReason?: string): TunnelState {
+export function chooseQuickTunnel(
+  workspaceId: string,
+  fallbackReason?: string,
+  selectionSource: TunnelSelectionSource = "workspace"
+): TunnelState {
   return writeTunnelState({
     workspaceId,
     preference: "quick",
     askedAt: new Date().toISOString(),
     provider: "cloudflare-quick",
     fallbackReason,
+    selectionSource,
   });
 }
 
 function fallbackState(workspaceId: string, reason: string, error: string): ProvisionNamedResult {
-  const state = chooseQuickTunnel(workspaceId, reason);
+  // Keep the quick tunnel usable for this run, but mark it as a fallback so
+  // the resolver retries the desired named default on the next start.
+  const state = chooseQuickTunnel(workspaceId, reason, "fallback");
   return {
     ok: true,
     state,
