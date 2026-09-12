@@ -68,6 +68,12 @@ Invoke-Checked "corepack" @("pnpm", "install", "--frozen-lockfile") $versionDire
 Invoke-Checked "corepack" @("pnpm", "build") $versionDirectory
 Invoke-Checked "node" @("bin/c2c.js", "--version") $versionDirectory
 
+$skillScript = Join-Path $versionDirectory "scripts\install-codex-c2c-skill.ps1"
+if (-not (Test-Path -LiteralPath $skillScript)) { throw "Pinned runtime does not contain its Codex Skill installer." }
+$shell = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+if (-not $shell) { $shell = (Get-Command powershell -ErrorAction Stop).Source }
+Invoke-Checked $shell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $skillScript, "-SourceSkill", (Join-Path $versionDirectory "skill\SKILL.md"), "-Repository", $Repository, "-Ref", $Ref, "-Commit", ((& git -C $versionDirectory rev-parse HEAD).Trim())) $versionDirectory
+
 $launcherDirectory = Join-Path $resolvedRoot "bin"
 New-Item -ItemType Directory -Force -Path $launcherDirectory | Out-Null
 $launcherPath = Join-Path $launcherDirectory "c2c-svl.cmd"
