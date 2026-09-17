@@ -33,4 +33,16 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("Do not wait for 8 tools");
     expect(normalizedSkill).toContain("never blind-resend");
   });
+
+  it("separates workspace-scoped and machine-wide CLI flags", () => {
+    expect(normalizedSkill).not.toContain("Always pass `-w <workspace root>`");
+    expect(normalizedSkill).toContain("For workspace-scoped commands, pass `-w <workspace root>`");
+    expect(normalizedSkill).toContain("Machine-wide commands are `update-check`, `sandbox-allow`, `prefs` (`get` and `set`), and `tunnel login`");
+    expect(normalizedSkill).toContain("`c2c update-check --json` (do not pass `-w`)");
+    expect(normalizedSkill).toContain("`c2c sandbox-allow --json` (do not pass `-w`)");
+    expect(normalizedSkill).toContain("accepts and ignores a leftover `-w <anything>`");
+    expect(normalizedSkill).toContain("These prefs are for this machine, not per workspace");
+    expect(normalizedSkill).toContain("ALWAYS use the built-in in-app browser (iab)");
+    expect(normalizedSkill).toContain("An explicit C2C request");
+  });
 });

@@ -318,6 +318,11 @@ program
   .version(VERSION, "-v, --version")
   .configureHelp({ sortSubcommands: true });
 
+/** Machine-wide commands ignore `-w` so old Skills/sessions cannot crash them. */
+function acceptUnusedWorkspaceOption(command: Command): Command {
+  return command.option("-w, --workspace <path>", "ignored; this command is machine-wide");
+}
+
 // ---------------------------------------------------------------- serve (internal)
 
 program
@@ -939,10 +944,12 @@ program
 
 // ---------------------------------------------------------------- sandbox-allow (Codex writable_roots, macOS + Windows)
 
-program
-  .command("sandbox-allow")
-  .description("Add the local settings directory to the Codex sandbox allowlist")
-  .option("--json", "machine-readable output", false)
+acceptUnusedWorkspaceOption(
+  program
+    .command("sandbox-allow")
+    .description("Add the local settings directory to the Codex sandbox allowlist")
+    .option("--json", "machine-readable output", false)
+)
   .action((opts: { json: boolean }) => {
     const result = trySandboxAllow();
     if (opts.json) {
@@ -974,11 +981,13 @@ function runGit(args: string[]): { ok: boolean; stdout: string } {
   return { ok: result.status === 0, stdout: (result.stdout ?? "").trim() };
 }
 
-program
-  .command("update-check")
-  .description("Check GitHub for a newer version (real check at most once per local day)")
-  .option("--force", "check even if already checked today", false)
-  .option("--json", "machine-readable output", false)
+acceptUnusedWorkspaceOption(
+  program
+    .command("update-check")
+    .description("Check GitHub for a newer version (real check at most once per local day)")
+    .option("--force", "check even if already checked today", false)
+    .option("--json", "machine-readable output", false)
+)
   .action((opts: { force: boolean; json: boolean }) => {
     const file = path.join(getStateDir(), "update-check.json");
     const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local tz
@@ -1156,10 +1165,12 @@ const prefsCmd = program
   .command("prefs")
   .description("Remember ChatGPT and C2C setup choices for this machine");
 
-prefsCmd
-  .command("get", { isDefault: true })
-  .description("Show remembered ChatGPT and C2C setup choices (not per workspace)")
-  .option("--json", "machine-readable output", false)
+acceptUnusedWorkspaceOption(
+  prefsCmd
+    .command("get", { isDefault: true })
+    .description("Show remembered ChatGPT and C2C setup choices (not per workspace)")
+    .option("--json", "machine-readable output", false)
+)
   .action((opts: { json: boolean }) => {
     const prefs = readUiPrefs();
     if (opts.json) {
@@ -1176,16 +1187,18 @@ prefsCmd
     if (prefs.tunnelZoneOverride) say(`本机覆盖域名：${prefs.tunnelZoneOverride}`);
   });
 
-prefsCmd
-  .command("set")
-  .description("Save ChatGPT and C2C setup choices for this machine")
-  .option("--developer-mode", "remember that ChatGPT developer mode is on", false)
-  .option("--setup-mode <mode>", "auto (preview) or manual")
-  .option("--default-tunnel <mode>", "default secure connection: quick or named")
-  .option("--default-tunnel-zone <domain>", "default Cloudflare domain for named connections")
-  .option("--tunnel-override <mode>", "machine-only override: quick or named")
-  .option("--tunnel-override-zone <domain>", "machine-only domain override for named connections")
-  .option("--json", "machine-readable output", false)
+acceptUnusedWorkspaceOption(
+  prefsCmd
+    .command("set")
+    .description("Save ChatGPT and C2C setup choices for this machine")
+    .option("--developer-mode", "remember that ChatGPT developer mode is on", false)
+    .option("--setup-mode <mode>", "auto (preview) or manual")
+    .option("--default-tunnel <mode>", "default secure connection: quick or named")
+    .option("--default-tunnel-zone <domain>", "default Cloudflare domain for named connections")
+    .option("--tunnel-override <mode>", "machine-only override: quick or named")
+    .option("--tunnel-override-zone <domain>", "machine-only domain override for named connections")
+    .option("--json", "machine-readable output", false)
+)
   .action(
     (opts: {
       developerMode: boolean;
@@ -1409,10 +1422,12 @@ tunnelCmd
     }
   });
 
-tunnelCmd
-  .command("login")
-  .description("Open the Cloudflare login window used by a named hostname")
-  .option("--json", "machine-readable output", false)
+acceptUnusedWorkspaceOption(
+  tunnelCmd
+    .command("login")
+    .description("Open the Cloudflare login window used by a named hostname")
+    .option("--json", "machine-readable output", false)
+)
   .action(async (opts: { json: boolean }) => {
     try {
       if (!opts.json) say(NAMED_LOGIN_PROMPT);

@@ -193,7 +193,16 @@ that close the tab, hide the window, or stall on the settings page.
   when the launcher is on PATH). All commands support `--json` for parsing.
 - If the pinned checkout has no `node_modules` or no `dist/`, run
   `corepack pnpm install --frozen-lockfile && corepack pnpm build` inside it.
-- Always pass `-w <workspace root>` (the project the user is working on, NOT the c2c repo).
+- For workspace-scoped commands, pass `-w <workspace root>` (the project the
+  user is working on, NOT the c2c repo): `setup`, `doctor`, `session` (`get`,
+  `set`, `clear`), `restart`, `start`, `stop`, `status`, `pair`, `unpair`,
+  `logs`, `workspace`, `identity`, `record`, `tunnel status`, and
+  `tunnel choose`.
+- Machine-wide commands are `update-check`, `sandbox-allow`, `prefs` (`get`
+  and `set`), and `tunnel login`; do not pass `-w` to them. The runtime accepts
+  and ignores a leftover `-w <anything>` on these commands for backward
+  compatibility with older Skills and running sessions. It never uses that
+  value as workspace state.
 
 ## Stability preflight
 
@@ -219,8 +228,8 @@ Before any workflow that can touch a connector or send a control message:
 At the START of every workflow below (before anything else), run these two
 commands (both are cheap / cached; never mention them unless an update exists):
 
-1. `c2c update-check --json`
-2. `c2c sandbox-allow --json` — writes the C2C state directory into Codex's
+1. `c2c update-check --json` (do not pass `-w`)
+2. `c2c sandbox-allow --json` (do not pass `-w`) — writes the C2C state directory into Codex's
    sandbox `writable_roots` (macOS: `~/Library/Application Support/codex-with-chatgpt`;
    Windows: `%LOCALAPPDATA%\codex-with-chatgpt`; config file is
    `~/.codex/config.toml` on both, or `%USERPROFILE%\.codex\config.toml` on Windows).

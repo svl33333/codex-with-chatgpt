@@ -9,10 +9,10 @@ into the TeamAI repository.
 ## Provenance
 
 - Upstream: <https://github.com/XiaoDuoYa/codex-with-chatgpt>
-- Baseline commit: `8fdd97c188c7678d0d9c43b3769b426940de568a`
+- Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.9`
+- Custom version: `0.1.3-svl.10`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -29,6 +29,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | Conversation identity | `src/conversation/registry.ts` | Project, conversation, repository, work, stage, and role are bound together; mismatches fail closed. |
 | Endpoint metadata | `src/config/endpoint.ts`, `src/cli/index.ts` | Endpoint mode, fingerprint, repository, installation, and connector identity are persisted alongside existing endpoint state. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
+| CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
 | Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
 
 These modules are adapter-level foundations. The upstream browser workflow
@@ -72,8 +73,9 @@ stay outside the repository and are not exercised by CI.
 
 1. Inspect upstream release notes and diff the new base against the recorded
    baseline; preserve the upstream remote.
-2. Rebase or replay only the custom patch commits. Resolve conflicts in the
-   identity/reconciliation modules explicitly; do not silently regenerate them.
+2. Semantic-port only reviewed upstream behavior. Do not merge, cherry-pick, or
+   wholesale-replace the custom fork; resolve conflicts in identity/reconciliation
+   modules explicitly.
 3. Bump the custom version, update this provenance table and tests, then run
    typecheck and the full fixture suite.
 4. Publish a new immutable tag on the custom fork.
