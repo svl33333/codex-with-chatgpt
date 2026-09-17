@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.10`
+- Custom version: `0.1.3-svl.11`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and

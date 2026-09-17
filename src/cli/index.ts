@@ -1393,7 +1393,10 @@ tunnelCmd
         workspaceName: workspace.name,
         zone,
         hostname: opts.hostname,
-        allowQuickFallback: true,
+        // An explicit workspace choice is fail-closed. Quick fallback is
+        // permitted only for a resolved TeamAI/machine policy, never merely
+        // because named provisioning failed during `tunnel choose`.
+        allowQuickFallback: false,
       });
       if (!result.ok && !result.fallback) {
         throw new Error(

@@ -94,6 +94,23 @@ describe("machine-wide commands accept leftover -w without using workspace state
     expect(result.stdout).not.toMatch(/dummy-workspace/);
   });
 
+  it("explicit named tunnel choice fails closed instead of silently choosing Quick", () => {
+    const stateDir = isolateStateDir();
+    const workspace = makeTmpDir("explicit-named-workspace");
+    const fakeCloudflared = write(makeTmpDir("fake-cloudflared-named"), "cloudflared.exe", "not an executable\n");
+    const dummyCert = write(stateDir, "origin-cert.pem", "fixture certificate\n");
+    dirs.push(stateDir, workspace, path.dirname(fakeCloudflared));
+    const result = runCli(["tunnel", "choose", "-w", workspace, "--mode", "named", "--zone", "example.com", "--json"], {
+      C2C_STATE_DIR: stateDir,
+      C2C_CLOUDFLARED_PATH: fakeCloudflared,
+      TUNNEL_ORIGIN_CERT: dummyCert,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toMatch(/NAMED_PROVISION_FAILED/);
+    expect(result.stdout).not.toMatch(/\"fallback\":true/);
+    expect(result.stdout).not.toMatch(/\"preference\":\"quick\"/);
+  });
+
   it("still rejects unrelated unknown options", () => {
     const result = runCli(["update-check", "--definitely-not-a-real-option"]);
     expect(result.status).not.toBe(0);
