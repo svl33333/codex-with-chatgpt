@@ -87,4 +87,29 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).not.toContain("完了」と伝えてください");
     expect(normalizedSkill).not.toContain("承認してから続行");
   });
+
+  it("keeps runtime setup and recovery output localized and observable", () => {
+    const runtime = [
+      fs.readFileSync(path.join(process.cwd(), "src", "cli", "index.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "config", "endpoint.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "config", "ui-prefs.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "tunnel", "state.ts"), "utf8"),
+    ].join("\n");
+
+    for (const phrase of [
+      "当前项目已识别",
+      "正在连接 ChatGPT",
+      "安全连接已建立",
+      "配对码",
+      "开发人员模式",
+      "配置方式",
+      "完成后告诉我",
+      "告诉我「好了」",
+    ]) {
+      expect(runtime).not.toContain(phrase);
+    }
+    expect(runtime).toContain("ChatGPT に接続しています");
+    expect(runtime).toContain("完了はブラウザとトンネルの状態から自動検知");
+    expect(runtime).toContain("チャットでの報告は不要");
+  });
 });
