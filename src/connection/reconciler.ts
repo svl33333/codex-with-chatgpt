@@ -153,16 +153,30 @@ function waiting(
   };
 }
 
+/**
+ * Browser/connector reads can fail transiently. Retry reads only, with a
+ * bounded attempt count; mutations remain strictly checkpointed and explicit.
+ */
+async function readWithRetry<T>(read: () => Promise<T>, attempts = 2): Promise<T | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await read();
+    } catch {
+      if (attempt + 1 === attempts) return null;
+    }
+  }
+  return null;
+}
+
 async function reconcileUnlocked(binding: ConnectionBinding, adapter: ConnectionAdapter): Promise<ReconcileOutcome> {
   const operationKey = connectionOperationKey(binding);
   const checkpoint = readCheckpoint(operationKey, binding);
   const mutations = { create: 0, delete: 0 };
-  let connectors: ConnectorRecord[];
-  try {
-    connectors = await adapter.listConnectors();
-  } catch {
+  const initialConnectors = await readWithRetry(() => adapter.listConnectors());
+  if (!initialConnectors) {
     return waiting(checkpoint, "connector list unavailable", mutations);
   }
+  let connectors = initialConnectors;
 
   const exact = connectors.filter((connector) => sameEndpoint(connector, binding));
   if (exact.length > 1) return waiting(checkpoint, "multiple connectors match the binding", mutations);
@@ -174,11 +188,11 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     checkpoint.connectorId = exact[0].id;
     saveCheckpoint(checkpoint);
     let info: { workspace: string; repository: string; ok: boolean };
-    try {
-      info = await adapter.workspaceInfo(exact[0]);
-    } catch {
+    const verified = await readWithRetry(() => adapter.workspaceInfo(exact[0]));
+    if (!verified) {
       return waiting(checkpoint, "workspace_info unavailable", mutations);
     }
+    info = verified;
     if (!info.ok) return waiting(checkpoint, "workspace_info rejected the connector", mutations);
     if (info.workspace !== binding.workspace || info.repository !== binding.canonicalRepository) {
       return {
@@ -214,7 +228,7 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     } catch {
       checkpoint.phase = "VERIFY_ABSENT";
       saveCheckpoint(checkpoint);
-      const afterDelete = await adapter.listConnectors().catch(() => null);
+      const afterDelete = await readWithRetry(() => adapter.listConnectors());
       if (!afterDelete) return waiting(checkpoint, "delete result unknown", mutations);
       if (afterDelete.some((connector) => connector.id === ownedOld[0].id)) {
         return waiting(checkpoint, "delete result unknown; connector still present", mutations);
@@ -222,7 +236,7 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     }
     checkpoint.phase = "VERIFY_ABSENT";
     saveCheckpoint(checkpoint);
-    const absent = await adapter.listConnectors().catch(() => null);
+    const absent = await readWithRetry(() => adapter.listConnectors());
     if (!absent) return waiting(checkpoint, "delete absence could not be verified", mutations);
     if (absent.some((connector) => connector.id === ownedOld[0].id)) {
       return waiting(checkpoint, "owned connector was not deleted", mutations);
@@ -244,7 +258,7 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     checkpoint.connectorId = created.id;
     checkpoint.phase = "VERIFY";
     saveCheckpoint(checkpoint);
-    const info = await adapter.workspaceInfo(created).catch(() => null);
+    const info = await readWithRetry(() => adapter.workspaceInfo(created));
     if (!info || !info.ok) return waiting(checkpoint, "created connector could not be verified", mutations);
     if (info.workspace !== binding.workspace || info.repository !== binding.canonicalRepository) {
       return {
@@ -261,11 +275,11 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     return { status: "READY", phase: "REUSE", operationKey, connector: created, mutations, checkpoint };
   } catch {
     // A transport timeout is not evidence of absence. Reconcile the list first.
-    const afterCreate = await adapter.listConnectors().catch(() => null);
+    const afterCreate = await readWithRetry(() => adapter.listConnectors());
     if (!afterCreate) return waiting(checkpoint, "create result unknown", mutations);
     const accepted = afterCreate.filter((connector) => sameEndpoint(connector, binding));
     if (accepted.length === 1) {
-      const info = await adapter.workspaceInfo(accepted[0]).catch(() => null);
+      const info = await readWithRetry(() => adapter.workspaceInfo(accepted[0]));
       if (info?.ok && info.workspace === binding.workspace && info.repository === binding.canonicalRepository) {
         checkpoint.connectorId = accepted[0].id;
         checkpoint.phase = "REUSE";

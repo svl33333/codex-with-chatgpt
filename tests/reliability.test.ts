@@ -45,9 +45,15 @@ class FakeConnectors implements ConnectionAdapter {
   createMode: "success" | "timeout-after-create" | "timeout" = "success";
   deleteMode: "success" | "timeout-after-delete" | "timeout" = "success";
   listAvailable = true;
+  listFailuresRemaining = 0;
+  workspaceInfoFailuresRemaining = 0;
 
   async listConnectors(): Promise<ConnectorRecord[]> {
     if (!this.listAvailable) throw new Error("list unavailable");
+    if (this.listFailuresRemaining > 0) {
+      this.listFailuresRemaining -= 1;
+      throw new Error("transient list failure");
+    }
     return [...this.connectors];
   }
 
@@ -74,6 +80,10 @@ class FakeConnectors implements ConnectionAdapter {
   }
 
   async workspaceInfo(connector: ConnectorRecord) {
+    if (this.workspaceInfoFailuresRemaining > 0) {
+      this.workspaceInfoFailuresRemaining -= 1;
+      throw new Error("transient workspace_info failure");
+    }
     return { workspace: connector.workspace, repository: connector.repository, ok: true };
   }
 }
@@ -120,6 +130,42 @@ describe("connection identity and connector reconciliation", () => {
     const result = await reconcileConnection(b, adapter);
     expect(result.status).toBe("READY");
     expect(result.mutations).toEqual({ create: 0, delete: 0 });
+  });
+
+  it("retries transient connector reads before waiting for the user", async () => {
+    const b = binding();
+    const adapter = new FakeConnectors();
+    adapter.listFailuresRemaining = 1;
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    const result = await reconcileConnection(b, adapter);
+    expect(result.status).toBe("READY");
+    expect(result.mutations).toEqual({ create: 0, delete: 0 });
+  });
+
+  it("retries transient workspace verification before converting to waiting", async () => {
+    const b = binding();
+    const adapter = new FakeConnectors();
+    adapter.workspaceInfoFailuresRemaining = 1;
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    const result = await reconcileConnection(b, adapter);
+    expect(result.status).toBe("READY");
+    expect(result.phase).toBe("REUSE");
   });
 
   it("creates and verifies a missing connector exactly once", async () => {

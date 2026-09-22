@@ -196,7 +196,7 @@ that close the tab, hide the window, or stall on the settings page.
 - For workspace-scoped commands, pass `-w <workspace root>` (the project the
   user is working on, NOT the c2c repo): `setup`, `doctor`, `session` (`get`,
   `set`, `clear`), `restart`, `start`, `stop`, `status`, `pair`, `unpair`,
-  `logs`, `workspace`, `identity`, `record`, `tunnel status`, and
+  `logs`, `workspace`, `identity`, `provisioning`, `record`, `tunnel status`, and
   `tunnel choose`.
 - Machine-wide commands are `update-check`, `sandbox-allow`, `prefs` (`get`
   and `set`), and `tunnel login`; do not pass `-w` to them. The runtime accepts
@@ -222,6 +222,9 @@ Before any workflow that can touch a connector or send a control message:
    an ambiguous delivery.
 6. Stop with `CONNECTION_WAITING` or `BLOCKED` when identity, ownership,
    repository, project, stage, role, or remote delivery cannot be verified.
+7. Persist setup progress with `c2c provisioning set` after each live
+   verification. A healthy saved phase is reusable by a new Codex session;
+   never use an acknowledgement-only chat reply as a synchronization primitive.
 
 ## Daily update check
 
@@ -298,6 +301,9 @@ ambiguity, destructive risk, an unset policy that genuinely needs the user's
 choice, or the documented two-failure transition to guided manual setup. A
 connector create, tunnel provision, pairing, browser action, or form submit by
 itself is never a HUMAN_WAITING reason.
+When the browser or MCP makes completion observable, resume immediately and
+persist the phase; never require 「完了」, 「承認」, or another acknowledgement-only
+chat reply.
 
 ## Workflow: first-time setup（"Codex with ChatGPT を使って初期設定を完了"）
 
@@ -367,7 +373,9 @@ itself is never a HUMAN_WAITING reason.
    `Use the "<connectorName>" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.`
    Confirm the reply matches `workspaceName` (wait per **In-app browser** §8).
    Only then save the chat URL with `c2c session set` (see Conversation
-   management). If the name does not match, do not save. markDeliverable.
+   management), then record the machine-observed state with
+   `c2c provisioning set -w <workspace> --phase ready --reason "workspace_info verified"`.
+   If the name does not match, do not save. markDeliverable.
 7. Report to the user exactly in this shape (no internals):
 
 ```
@@ -382,8 +390,9 @@ Codex with ChatGPT
 Ready.
 ```
 
-If a login wall appears (ChatGPT, Cloudflare): stop, tell the user the ONE thing
-to do ("ChatGPT にログインし、完了したら「完了」と伝えてください"), then continue.
+If a login wall appears (ChatGPT, Cloudflare): stop and tell the user the ONE
+action required (log in). Resume as soon as the browser visibly leaves the login
+wall; do not require a chat acknowledgement.
 
 ### Guided manual ChatGPT setup
 
@@ -404,12 +413,13 @@ Opening line:
 - Chosen (`setupMode: "manual"`): `これから手動ガイドで設定します。一度に行う操作は一つだけです。`
 - Failure fallback: `自動設定に失敗しました。手動で完了までご案内します。一度に行う操作は一つだけです。`
 
-Then guide ONE action at a time, waiting for the user to say「完了」before the
-next action:
+Then guide ONE action at a time. After each action, inspect the same tab and
+continue as soon as the required page or authorization state is observable;
+do not wait for a completion message:
 
 1. If `developerModeEnabled` is not true: ask them to open
-   `https://chatgpt.com/#settings/Security` and enable 開発者モード. After they
-   say「完了」, `c2c prefs set --developer-mode`. If it is already remembered,
+   `https://chatgpt.com/#settings/Security` and enable 開発者モード. After the
+   page shows it enabled, run `c2c prefs set --developer-mode`. If it is already remembered,
    skip this step.
 2. Ask them to open `https://chatgpt.com/plugins`. If the exact `connectorName`
    exists, delete only that connector. Never ask them to touch another workspace's connector.
@@ -421,10 +431,11 @@ next action:
    - Authentication: OAuth
 4. Ask them to Connect / Authorize. Then run `c2c pair --json` and give them
    only that pairing code. If it expires before they finish, run pair again.
-5. When they report Connected / authorized / pairing accepted, resume the normal
-   setup/reconnect flow at its ChatGPT verification step. If automatic browser
-   verification then hits the same explicit failure twice, stop and report the
-   exact failed step; do not loop indefinitely and do not continue without C2C.
+5. After the page shows Connected / authorized / pairing accepted, resume the
+   normal setup/reconnect flow at its ChatGPT verification step. If automatic
+   browser verification then hits the same explicit failure twice, stop and
+   report the exact failed step; do not loop indefinitely and do not continue
+   without C2C.
 
 ## Conversation management
 
@@ -492,8 +503,9 @@ One ChatGPT Project per workspace. Mapping:
 **Update it**: same `c2c session set --task / --iteration / --state` as long-chat.
 
 **Wrong collection**: do not guess another Project. Tell the user the expected
-workspace name, ask them to open the right collection, then say「見つかりました」.
-Also offer「長い会話を続ける」. If they pick long-chat:
+   workspace name and ask them to open the right collection. Once the address
+   bar shows the expected collection, continue automatically. Also offer
+   「長い会話を続ける」. If they pick long-chat:
 `c2c session set -w <ws> --mode long-chat` and use the long-chat path.
 If the collection 404s or the new chat is not inside the Project, same choice.
 
@@ -514,12 +526,13 @@ ChatGPT で新しいプロジェクトを作成し、名前を「<workspaceName>
 
 サイドバーに「プロジェクト」が見当たらない場合は、「チャット」にカーソルを合わせ、右側に現れる三点メニューから「プロジェクトで整理」を選択してください。
 
-作成後にプロジェクトのコレクションページが開きます。そのページが表示されたら「完了」と伝えてください。
+作成後にプロジェクトのコレクションページが開きます。ページが表示されると、内蔵ブラウザーで自動的に検証して続行します。
 ```
 
-2. Wait for「完了」/ the collection page. Same iab tab: read the address bar.
-   It must look like `https://chatgpt.com/g/g-p-…/project`. If it does not,
-   ask them to open that project until it does. Then:
+2. In the same iab tab, read the address bar. It must look like
+   `https://chatgpt.com/g/g-p-…/project`. If it does not, ask them to open
+   that project until it does; once it matches, continue without a reply.
+   Then:
    `c2c session set -w <ws> --mode project --project-url <url> --connector-name "<connectorName>"`.
 
 3. On that same collection page only, open the top-right **… → プロジェクト設定**.

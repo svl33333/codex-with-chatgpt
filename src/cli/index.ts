@@ -73,6 +73,12 @@ import {
   writeConnectionBinding,
   type EndpointMode,
 } from "../connection/identity.js";
+import {
+  PROVISIONING_PHASES,
+  readProvisioningState,
+  writeProvisioningState,
+  type ProvisioningPhase,
+} from "../provisioning/state.js";
 
 const program = new Command();
 
@@ -100,6 +106,14 @@ function parseNonNegativeInteger(value: string): number {
   const parsed = parseInteger(value);
   if (parsed < 0) throw new InvalidArgumentError("must be a non-negative integer");
   return parsed;
+}
+
+function parseProvisioningPhase(value: string): ProvisioningPhase {
+  const phase = value.trim().toLowerCase() as ProvisioningPhase;
+  if (!PROVISIONING_PHASES.includes(phase)) {
+    throw new InvalidArgumentError(`phase must be one of ${PROVISIONING_PHASES.join(", ")}`);
+  }
+  return phase;
 }
 
 function parseChangedFiles(value: string): string[] | number {
@@ -397,6 +411,11 @@ program
         say("");
       }
       const workspace = new Workspace(root);
+      const previousProvisioning = readProvisioningState(workspace.id);
+      writeProvisioningState(workspace.id, previousProvisioning ? "repairing" : "uninitialized", {
+        reason: "setup or recovery started",
+        retryCount: previousProvisioning?.retryCount ?? 0,
+      });
       const state = readTunnelState(workspace.id);
       const policy = resolveTunnelSelection(state, readUiPrefs());
       const needsChoice = policy.mode === null || (policy.mode === "named" && !policy.zone);
@@ -406,6 +425,9 @@ program
       validateSetupTunnelFlag(policy, opts.tunnel);
       const sandbox = trySandboxAllow();
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      writeProvisioningState(workspace.id, info.tokenCount > 0 ? "authenticated" : "runtime_ready", {
+        reason: info.tokenCount > 0 ? "local bridge and authorization are available" : "local bridge is ready",
+      });
       const connectorName = mcpUrl
         ? persistWorkspaceEndpoint({
             workspaceId: info.workspaceId,
@@ -515,8 +537,9 @@ program
     }
     const runtime = observation.runtime;
     const info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
+    const provisioning = readProvisioningState(workspace.id);
     if (opts.json) {
-      say(JSON.stringify({ ok: true, running: true, ...info }));
+      say(JSON.stringify({ ok: true, running: true, ...info, provisioning }));
       return;
     }
     say(PRODUCT_NAME);
@@ -526,6 +549,7 @@ program
     if (info.tunnel.running && info.tunnel.url) check(`安全连接：${info.tunnel.url}/mcp`);
     else say("· 安全连接：未启用（本地模式）");
     say(`· 已授权连接：${info.tokenCount > 0 ? "是" : "否"}`);
+    if (provisioning) say(`· 设置状态：${provisioning.phase}`);
   });
 
 // ---------------------------------------------------------------- doctor
@@ -576,6 +600,7 @@ program
 
     // Bridge
     let runtime: RuntimeState | null = null;
+    let authorizedTokenCount: number | null = null;
     let bridgeUnknown = false;
     if (workspace) {
       const observation = await findBridgeObservation(workspace.id);
@@ -657,6 +682,7 @@ program
 
     if (runtime) {
       let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
+      authorizedTokenCount = info.tokenCount;
       if (namedReady && opts.fix && info.tunnel.provider !== "cloudflare-named") {
         await stopBridge(root);
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -767,8 +793,36 @@ program
       };
     }
 
+    // Persist only observable setup state. A previously verified ready state is
+    // reusable in a new Codex session while any local health failure is degraded.
+    if (workspace) {
+      const previousProvisioning = readProvisioningState(workspace.id);
+      const localHealthy =
+        report.workspace?.ok === true && report.bridge?.ok === true && report.mcp?.ok === true && report.tunnel?.ok === true;
+      const retainedVerifiedPhase =
+        previousProvisioning &&
+        ["connector_ready", "project_binding", "workspace_verification", "ready"].includes(previousProvisioning.phase)
+          ? previousProvisioning.phase
+          : null;
+      const phase: ProvisioningPhase = !localHealthy
+        ? "degraded"
+        : chatgptRepair.needed
+          ? "repairing"
+          : retainedVerifiedPhase ?? (authorizedTokenCount && authorizedTokenCount > 0 ? "authenticated" : "runtime_ready");
+      writeProvisioningState(workspace.id, phase, {
+        reason: chatgptRepair.needed ? chatgptRepair.reason : localHealthy ? "doctor verification" : "local health check failed",
+        retryCount: previousProvisioning?.retryCount ?? 0,
+      });
+    }
+
     if (opts.json) {
-      say(JSON.stringify({ report, repairs: results, chatgptRepair, namedRepair }));
+      say(JSON.stringify({
+        report,
+        repairs: results,
+        chatgptRepair,
+        namedRepair,
+        provisioning: workspace ? readProvisioningState(workspace.id) : null,
+      }));
       return;
     }
     say(`${PRODUCT_NAME} Doctor`);
@@ -1159,6 +1213,49 @@ session
     if (!result.cleared) say("尚未记录 ChatGPT 会话。");
     else if (result.keptProject) check("已清除当前对话，合集绑定仍保留");
     else check("已清除会话记录，下次任务将新建 ChatGPT 会话");
+  });
+
+// ---------------------------------------------------------------- provisioning (machine-local setup state)
+
+const provisioning = program
+  .command("provisioning")
+  .description("Show or update machine-local C2C setup state");
+
+provisioning
+  .command("get", { isDefault: true })
+  .description("Show the saved setup phase")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; json: boolean }) => {
+    const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    const state = readProvisioningState(workspace.id);
+    if (opts.json) {
+      say(JSON.stringify({ ok: true, workspaceId: workspace.id, state }));
+      return;
+    }
+    if (!state) say("セットアップ状態は未初期化です。");
+    else {
+      say(`状態：${state.phase}`);
+      if (state.reason) say(`理由：${state.reason}`);
+    }
+  });
+
+provisioning
+  .command("set")
+  .description("Record an observed setup phase after live verification")
+  .option("-w, --workspace <path>")
+  .requiredOption("--phase <phase>", `one of ${PROVISIONING_PHASES.join(", ")}`)
+  .option("--reason <text>")
+  .option("--retry-count <n>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; phase: string; reason?: string; retryCount?: string; json: boolean }) => {
+    const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    const state = writeProvisioningState(workspace.id, parseProvisioningPhase(opts.phase), {
+      reason: opts.reason,
+      retryCount: opts.retryCount === undefined ? undefined : parseNonNegativeInteger(opts.retryCount),
+    });
+    if (opts.json) say(JSON.stringify({ ok: true, workspaceId: workspace.id, state }));
+    else check(`セットアップ状態を記録しました（${state.phase}）`);
   });
 
 const prefsCmd = program

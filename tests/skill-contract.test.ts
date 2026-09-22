@@ -78,4 +78,13 @@ describe("Codex-native Skill contract", () => {
       expect(normalizedSkill).not.toContain(phrase);
     }
   });
+
+  it("continues from machine-observable setup state without acknowledgement stops", () => {
+    expect(normalizedSkill).toContain("c2c provisioning set");
+    expect(normalizedSkill).toContain("resume immediately");
+    expect(normalizedSkill).toContain("workspace_info");
+    expect(normalizedSkill).not.toContain("waiting for the user to say「完了」");
+    expect(normalizedSkill).not.toContain("完了」と伝えてください");
+    expect(normalizedSkill).not.toContain("承認してから続行");
+  });
 });
