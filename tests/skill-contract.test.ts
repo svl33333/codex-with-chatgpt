@@ -45,4 +45,37 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("ALWAYS use the built-in in-app browser (iab)");
     expect(normalizedSkill).toContain("An explicit C2C request");
   });
+
+  it("uses Japanese rather than the former Chinese setup and recovery wording", () => {
+    expect(normalizedSkill).toContain("ChatGPT で新しいプロジェクトを作成し");
+    expect(normalizedSkill).toContain("プロジェクト限定メモリ");
+    expect(normalizedSkill).toContain("プロジェクトで整理");
+
+    for (const phrase of [
+      "使用 Codex with ChatGPT",
+      "用 ChatGPT 规划",
+      "连接 ChatGPT",
+      "安全连接",
+      "检测到",
+      "开发人员模式",
+      "插件总管",
+      "加插件",
+      "新对话",
+      "接下来用手动教学配置",
+      "自动配置没有成功",
+      "当前项目已识别",
+      "请登录 ChatGPT",
+      "请在 ChatGPT 里新建一个项目",
+      "仅限项目记忆",
+      "按项目整理",
+      "项目设置",
+      "库访问权限",
+      "已完成 12 轮协作",
+      "断开 ChatGPT",
+      "全关掉以后",
+      "全关掉后连接失效",
+    ]) {
+      expect(normalizedSkill).not.toContain(phrase);
+    }
+  });
 });
