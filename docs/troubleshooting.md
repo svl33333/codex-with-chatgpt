@@ -105,15 +105,15 @@ Working as intended: `.env`, keys, credentials and anything matched by
 `.c2cignore` are never readable through ChatGPT. `.env.example` is allowed.
 
 ### I cannot see Projects in the ChatGPT sidebar
-Hover **Chats** /「聊天」, click the … that appears, and choose
-**Organize by project** /「按项目整理」. Then create a project named after
-this workspace, with **project-only memory**. Tell Codex「好了」when the
+Open **Chats**, click the … that appears, and choose
+**Organize by project**. Then create a project named after
+this workspace, with **project-only memory**. Codex resumes automatically once
 collection page is open (`https://chatgpt.com/g/g-p-…/project`).
 
 ### This workspace opened the wrong ChatGPT Project
 Do not pick another project by name automatically. Open the collection that
-matches this workspace and tell Codex「已找到」, or say you want the old
-long-chat instead. Each workspace has its own Project and its own connector.
+matches this workspace; Codex verifies the live Project and connector binding
+before continuing. Each workspace has its own Project and its own connector.
 
 ### Completely stuck
 ```

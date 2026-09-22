@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.11`
+- Custom version: `0.1.3-svl.12`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -28,6 +28,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | Message delivery | `src/conversation/delivery.ts` | Task, iteration, and message ID form an idempotency key; ambiguous transport is reconciled by remote status rather than blindly resent. |
 | Conversation identity | `src/conversation/registry.ts` | Project, conversation, repository, work, stage, and role are bound together; mismatches fail closed. |
 | Endpoint metadata | `src/config/endpoint.ts`, `src/cli/index.ts` | Endpoint mode, fingerprint, repository, installation, and connector identity are persisted alongside existing endpoint state. |
+| Provisioning state | `src/provisioning/state.ts`, `src/cli/index.ts` | Machine-local, secret-free setup phases survive a new Codex session; live verification can advance them without chat acknowledgements. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
 | CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
 | Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
@@ -35,7 +36,9 @@ replace the custom checkout with a mutable working tree during bootstrap.
 These modules are adapter-level foundations. The upstream browser workflow
 still performs the user-facing connector operation; callers should use the
 checkpoint contracts before invoking it. Normal startup must not delete or
-recreate a connector merely because a process restarted.
+recreate a connector merely because a process restarted. Browser-visible login,
+authorization, Project, and `workspace_info` state is the synchronization
+source; a user chat acknowledgement is not.
 
 ## Safety invariants
 

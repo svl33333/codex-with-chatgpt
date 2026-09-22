@@ -45,4 +45,71 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("ALWAYS use the built-in in-app browser (iab)");
     expect(normalizedSkill).toContain("An explicit C2C request");
   });
+
+  it("uses Japanese rather than the former Chinese setup and recovery wording", () => {
+    expect(normalizedSkill).toContain("ChatGPT で新しいプロジェクトを作成し");
+    expect(normalizedSkill).toContain("プロジェクト限定メモリ");
+    expect(normalizedSkill).toContain("プロジェクトで整理");
+
+    for (const phrase of [
+      "使用 Codex with ChatGPT",
+      "用 ChatGPT 规划",
+      "连接 ChatGPT",
+      "安全连接",
+      "检测到",
+      "开发人员模式",
+      "插件总管",
+      "加插件",
+      "新对话",
+      "接下来用手动教学配置",
+      "自动配置没有成功",
+      "当前项目已识别",
+      "请登录 ChatGPT",
+      "请在 ChatGPT 里新建一个项目",
+      "仅限项目记忆",
+      "按项目整理",
+      "项目设置",
+      "库访问权限",
+      "已完成 12 轮协作",
+      "断开 ChatGPT",
+      "全关掉以后",
+      "全关掉后连接失效",
+    ]) {
+      expect(normalizedSkill).not.toContain(phrase);
+    }
+  });
+
+  it("continues from machine-observable setup state without acknowledgement stops", () => {
+    expect(normalizedSkill).toContain("c2c provisioning set");
+    expect(normalizedSkill).toContain("resume immediately");
+    expect(normalizedSkill).toContain("workspace_info");
+    expect(normalizedSkill).not.toContain("waiting for the user to say「完了」");
+    expect(normalizedSkill).not.toContain("完了」と伝えてください");
+    expect(normalizedSkill).not.toContain("承認してから続行");
+  });
+
+  it("keeps runtime setup and recovery output localized and observable", () => {
+    const runtime = [
+      fs.readFileSync(path.join(process.cwd(), "src", "cli", "index.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "config", "endpoint.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "config", "ui-prefs.ts"), "utf8"),
+      fs.readFileSync(path.join(process.cwd(), "src", "tunnel", "state.ts"), "utf8"),
+    ].join("\n");
+
+    for (const phrase of [
+      "当前项目已识别",
+      "正在连接 ChatGPT",
+      "安全连接已建立",
+      "配对码",
+      "开发人员模式",
+      "配置方式",
+      "完成后告诉我",
+      "告诉我「好了」",
+    ]) {
+      expect(runtime).not.toContain(phrase);
+    }
+    expect(runtime).toContain("ChatGPT に接続しています");
+    expect(runtime).toContain("完了はブラウザとトンネルの状態から自動検知");
+    expect(runtime).toContain("チャットでの報告は不要");
+  });
 });
