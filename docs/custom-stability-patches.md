@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.11`
+- Custom version: `0.1.3-svl.12`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -28,6 +28,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | Message delivery | `src/conversation/delivery.ts` | Task, iteration, and message ID form an idempotency key; ambiguous transport is reconciled by remote status rather than blindly resent. |
 | Conversation identity | `src/conversation/registry.ts` | Project, conversation, repository, work, stage, and role are bound together; mismatches fail closed. |
 | Endpoint metadata | `src/config/endpoint.ts`, `src/cli/index.ts` | Endpoint mode, fingerprint, repository, installation, and connector identity are persisted alongside existing endpoint state. |
+| Consent policy | `src/connection/consent.ts`, `skill/SKILL.md` | A ChatGPT unreviewed-MCP warning is auto-confirmable only after exact read-only C2C binding, account, ownership, and scope checks; ambiguous consent remains human-required. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
 | CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
 | Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
@@ -50,6 +51,10 @@ recreate a connector merely because a process restarted.
 6. Project, conversation, stage, role, and repository mismatch is `BLOCKED`.
 7. Checkpoints contain identifiers and hashes, never OAuth tokens, cookies,
    pairing codes, or message bodies.
+8. A service-side warning is never accepted from text alone. Automatic consent
+   requires the verified expected C2C surface plus an exact workspace,
+   repository, installation, endpoint, connector-name, account, ownership, and
+   read-only-scope match; otherwise the operation remains human-required.
 
 ## Verification
 

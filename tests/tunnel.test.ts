@@ -351,7 +351,7 @@ describe("tunnel preference state", () => {
     }).then((result) => {
       expect(result.fallback).toBe(true);
       expect(result.state.preference).toBe("quick");
-      expect(result.userMessage).toMatch(/临时地址/);
+      expect(result.userMessage).toMatch(/一時アドレス/);
     });
   });
 

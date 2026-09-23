@@ -38,6 +38,12 @@ Scopes: `workspace.read`, `workspace.search`, `git.read`, `execution.read`,
 Access tokens: 1 hour. Refresh tokens: 30 days, rotated. All tokens bound to
 `workspace_id` and `client_id`.
 
+The normal C2C provisioning path may automatically confirm ChatGPT's
+"unreviewed MCP connector" warning only after the live IAB state proves the
+expected connector, workspace, repository, installation, endpoint, account,
+ownership, and exact scope set. Unknown or expanded consent remains a human
+boundary; the warning text alone never authorizes a click.
+
 ## Storage
 
 State lives under the OS-convention app dir
