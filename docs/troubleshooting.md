@@ -11,11 +11,11 @@ can (restarts the bridge, restarts the tunnel) without asking.
 
 ## Common situations
 
-### "Bridge 未运行"
+### "Bridge is not running"
 `c2c start` (or let doctor do it). Bridge logs:
 `c2c logs`, or verbose: `c2c logs --verbose`.
 
-If doctor says the bridge state is **uncertain** (无法确认), do not start a
+If doctor says the bridge state is **uncertain**, do not start a
 second bridge and do not Delete the ChatGPT connector. Wait and run doctor
 again. The local process may still be running.
 
@@ -55,7 +55,7 @@ login, then keeps `c2c-<project>.your-domain.com`. To stay on the temporary
 address, say you do not have a domain. Switching later: tell Codex you want
 the stable hostname; it runs `c2c tunnel choose --mode named --zone <domain>`.
 
-### "配对码无效/过期"
+### "Pairing code invalid/expired"
 Pairing codes are one-time and expire after ~5 minutes. Generate one only
 when the ChatGPT Authorize page is ready:
 
@@ -105,15 +105,15 @@ Working as intended: `.env`, keys, credentials and anything matched by
 `.c2cignore` are never readable through ChatGPT. `.env.example` is allowed.
 
 ### I cannot see Projects in the ChatGPT sidebar
-Open **Chats**, click the … that appears, and choose
-**Organize by project**. Then create a project named after
-this workspace, with **project-only memory**. Codex resumes automatically once
-collection page is open (`https://chatgpt.com/g/g-p-…/project`).
+Hover **Chats**, click the … that appears, and choose
+**Organize by project**. Then create a project named after this workspace,
+with **project-only memory**. Leave the collection page open
+(`https://chatgpt.com/g/g-p-…/project`); Codex detects the page automatically.
 
 ### This workspace opened the wrong ChatGPT Project
 Do not pick another project by name automatically. Open the collection that
-matches this workspace; Codex verifies the live Project and connector binding
-before continuing. Each workspace has its own Project and its own connector.
+matches this workspace and leave it open, or say you want the old
+long-chat instead. Each workspace has its own Project and its own connector.
 
 ### Completely stuck
 ```
