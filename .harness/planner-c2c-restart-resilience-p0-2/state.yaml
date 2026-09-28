@@ -7,7 +7,7 @@ workflow:
   review_contract: schema/c2c-review-contract.json
   step: 7
   stage: Final Review / Merge
-  status: C2C_WAITING
+  status: HUMAN_WAITING
   step4_approval:
     route: direct
     artifact: 02-plan.md
@@ -18,10 +18,11 @@ workflow:
   last_completed_action: >-
     Step 4 direct approval was explicitly granted for 02-plan.md at the
     recorded approval timestamp. Step 5 implementation and five in-scope
-    remediation rounds are complete. The existing bound C2C session returned
-    PASS on the final post-implementation re-review. Step 6 publication was
-    explicitly approved and the approved implementation, tests, and workflow
-    artifacts were published to PR #4. Merge remains unauthorized.
+    remediation rounds are complete. Step 6 publication was explicitly
+    approved and the approved implementation, tests, and workflow artifacts
+    were published to PR #4. Step 7 independent final C2C review returned
+    PASS with no remaining FIX_REQUIRED implementation finding. Merge remains
+    unauthorized pending the merge-approval Human Gate.
 issue:
   number: 3
   url: https://github.com/svl33333/codex-with-chatgpt/issues/3
@@ -44,13 +45,15 @@ artifacts:
   - .harness/planner-c2c-restart-resilience-p0-2/02-plan.md
   - .harness/planner-c2c-restart-resilience-p0-2/04-test-summary.md
   - .harness/planner-c2c-restart-resilience-p0-2/04-implementation-log.md
+  - .harness/planner-c2c-restart-resilience-p0-2/05-final-review.md
 c2c:
   checkpoint: P0_2_STEP7_FINAL_C2C_REVIEW
   review_stage: final
-  verdict: null
-  cycle: 0
-  last_action: REVIEW
-  human_action_queue: []
+  verdict: PASS
+  cycle: 1
+  last_action: PROCEED
+  human_action_queue:
+    - merge approval for PR #4
   capability_limitation: >-
     The exact bound connector exposes no live GitHub Issue-read operation.
     The checkpoint permits the previously authenticated and verified
@@ -59,8 +62,10 @@ c2c:
   publication_evidence: >-
     PR #4 is open against release/v0.1.3-svl.13. The remote comparison shows
     five publication commits and 19 changed files. The PR is marked ready to
-    merge by GitHub; merge is not authorized at this step.
+    merge by GitHub; Step 7 C2C final review returned PASS. Live PR head and
+    remote checks remain to be verified at the merge-approval Human Gate;
+    merge is not authorized at this step.
 next:
-  action: send bounded independent C2C final-diff review for PR #4
-  blocked_on: independent C2C final review
-updated_at: "2026-09-28T08:32:08Z"
+  action: request merge approval for PR #4
+  blocked_on: merge approval
+updated_at: "2026-09-28T08:37:29Z"
