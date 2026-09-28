@@ -26,6 +26,7 @@ import {
   validateSetupTunnelFlag,
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
+import { sanitizeExecutionOutput } from "../execution/sanitize.js";
 import { getStateDir } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import {
@@ -79,6 +80,14 @@ import {
   writeProvisioningState,
   type ProvisioningPhase,
 } from "../provisioning/state.js";
+import { readRecoveryBinding, seedRecoveryBinding, validateRecoveryBinding } from "../recovery/bindings.js";
+import { recoverBinding } from "../recovery/reconciler.js";
+import { uninstallRecoveryState } from "../recovery/lifecycle.js";
+import {
+  installSupervisor,
+  statusSupervisor,
+  uninstallSupervisor,
+} from "../recovery/supervisor.js";
 
 const program = new Command();
 
@@ -476,6 +485,127 @@ program
       say("");
       say("次の手順：ChatGPT のコネクタ設定で上記URLをOAuthとして追加し、認証ページでペアリングコードを入力してください。");
       say("Codex Skill を使用している場合、この手順は自動で完了します。");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+// ---------------------------------------------------------------- recovery / supervisor
+
+program
+  .command("recover")
+  .description("Recover the configured bridge and secure tunnel without re-pairing")
+  .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
+  .option("--binding-id <id>", "authoritative ConnectionBinding workspace ID")
+  .option("--seed", "seed a missing P0-2 recovery record from the verified binding")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; bindingId?: string; seed?: boolean; json: boolean }) => {
+    try {
+      let root: string;
+      let bindingId: string;
+      if (opts.workspace) {
+        root = resolveWorkspace(opts.workspace);
+        const workspace = new Workspace(root);
+        bindingId = opts.bindingId ?? workspace.id;
+        if (bindingId !== workspace.id) throw new Error("binding ID does not match the requested workspace");
+      } else if (opts.bindingId) {
+        const stored = readRecoveryBinding(opts.bindingId);
+        if (!stored) throw new Error("binding-only recovery requires an existing validated recovery record");
+        root = validateRecoveryBinding(stored, stored.canonicalAllowedRoot).canonicalAllowedRoot;
+        bindingId = opts.bindingId;
+      } else {
+        root = resolveWorkspace();
+        bindingId = new Workspace(root).id;
+      }
+      if (opts.seed && !opts.workspace) throw new Error("recovery seeding requires an explicit workspace root");
+      if (opts.seed) {
+        throw new Error("recovery seeding requires a verified protected-secret and tunnel capability");
+      }
+      const result = await recoverBinding(root, bindingId);
+      if (opts.json) {
+        say(JSON.stringify(result));
+        if (!result.ok) process.exitCode = 1;
+        return;
+      }
+      if (result.ok) check(`P0-2 recovery: ${result.status}`);
+      else cross(`P0-2 recovery ${result.status}: ${result.reason ?? "未完了"}`);
+      if (!result.ok) process.exitCode = 1;
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+const supervisorCmd = program.command("supervisor").description("Manage the P0-2 per-user recovery supervisor");
+
+function currentCliEntry(): string {
+  const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "index.js");
+  return fs.existsSync(entry) ? entry : fileURLToPath(import.meta.url);
+}
+
+function authorizedSupervisorInstallOptions(bindingId: string): { bindingId: string; cliPath: string; startupPolicy: "user_logon" } {
+  const record = readRecoveryBinding(bindingId);
+  if (!record) throw new Error("supervisor installation requires an existing validated recovery binding");
+  const validated = validateRecoveryBinding(record, record.canonicalAllowedRoot, readConnectionBinding(bindingId));
+  if (validated.startupPolicy !== "user_logon") {
+    throw new Error("recovery binding startup policy does not authorize user-logon supervision");
+  }
+  return { bindingId, cliPath: currentCliEntry(), startupPolicy: "user_logon" };
+}
+
+supervisorCmd
+  .command("install")
+  .description("Install the owned P0-2 user-logon recovery task")
+  .requiredOption("--binding-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { bindingId: string; json: boolean }) => {
+    try {
+      const result = installSupervisor(authorizedSupervisorInstallOptions(opts.bindingId));
+      if (opts.json) say(JSON.stringify(result));
+      else if (result.ok) check(`監視タスクを登録しました：${result.taskName}`);
+      else cross(result.reason ?? result.status);
+      if (!result.ok) process.exitCode = 1;
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+supervisorCmd
+  .command("status")
+  .description("Inspect the owned P0-2 user-logon recovery task")
+  .requiredOption("--binding-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { bindingId: string; json: boolean }) => {
+    try {
+      const result = statusSupervisor({ bindingId: opts.bindingId, cliPath: currentCliEntry() });
+      if (opts.json) say(JSON.stringify(result));
+      else if (result.status === "installed") check(`監視タスク：${result.taskName}`);
+      else say(`監視タスク：${result.status}`);
+      if (!result.ok && result.status !== "absent") process.exitCode = 1;
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+supervisorCmd
+  .command("uninstall")
+  .description("Remove only the owned P0-2 user-logon recovery task")
+  .requiredOption("--binding-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { bindingId: string; json: boolean }) => {
+    try {
+      const taskResult = uninstallSupervisor({ bindingId: opts.bindingId, cliPath: currentCliEntry() });
+      if (!taskResult.ok && taskResult.status !== "absent") {
+        if (opts.json) say(JSON.stringify(taskResult));
+        else cross(taskResult.reason ?? taskResult.status);
+        process.exitCode = 1;
+        return;
+      }
+      const stateResult = await uninstallRecoveryState(opts.bindingId);
+      const result = { ...taskResult, state: stateResult };
+      if (opts.json) say(JSON.stringify(result));
+      else if (stateResult.ok) check(`監視タスクと P0-2 状態を解除しました：${taskResult.taskName}`);
+      else cross(stateResult.reason ?? stateResult.status);
+      if (!stateResult.ok) process.exitCode = 1;
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -1542,7 +1672,9 @@ acceptUnusedWorkspaceOption(
   });
 
 function handleCliError(error: unknown, json: boolean): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const sanitizedMessage = sanitizeExecutionOutput(rawMessage);
+  const message = sanitizedMessage.allowed ? sanitizedMessage.text : "diagnostic output withheld";
   if (json) {
     if (message.startsWith("NEED_CLOUDFLARE_LOGIN")) {
       say(JSON.stringify({ ok: false, waiting: "HUMAN_WAITING", need: "cloudflare_login", error: message }));
