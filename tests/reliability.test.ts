@@ -347,4 +347,51 @@ describe("conversation registry identity", () => {
     expect(readConversationBinding(workspaceId, { ...common, stage: "plan_review", role: "reviewer" })?.conversationId).toBe("conversation-review");
     expect(() => readConversationBinding(workspaceId, { ...common, stage: "planning", workspace: "wrong" })).toThrow(/identity mismatch/);
   });
+
+  it("keeps an operation target bound to the exact review conversation", () => {
+    const workspaceId = "workspace-operation";
+    const target = {
+      kind: "issue_update" as const,
+      repository: "https://github.com/example/demo",
+      logicalOperationId: "issue-update-6",
+      issueNumber: 6,
+      expectedRevision: "revision-6",
+    };
+    bindConversation(workspaceId, {
+      projectId: "project-1",
+      conversationId: "conversation-review",
+      workspace: "demo",
+      repository: target.repository,
+      workId: "issue-6",
+      stage: "pr_review",
+      role: "reviewer",
+      checkpoint: "c2c_operation",
+      eventKey: "c2c_operation",
+      operationKey: "operation-a",
+      operationTarget: target,
+      updatedAt: new Date().toISOString(),
+    });
+    expect(
+      readConversationBinding(workspaceId, {
+        repository: target.repository,
+        workId: "issue-6",
+        stage: "pr_review",
+        role: "reviewer",
+        checkpoint: "c2c_operation",
+        eventKey: "c2c_operation",
+        operationKey: "operation-a",
+        operationTarget: target,
+      })?.operationTarget
+    ).toEqual(target);
+    expect(() => readConversationBinding(workspaceId, {
+      repository: target.repository,
+      workId: "issue-6",
+      stage: "pr_review",
+      role: "reviewer",
+      checkpoint: "c2c_operation",
+      eventKey: "c2c_operation",
+      operationKey: "operation-a",
+      operationTarget: { ...target, expectedRevision: "other" },
+    })).toThrow(/identity mismatch/);
+  });
 });

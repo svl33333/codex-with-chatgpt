@@ -2,7 +2,7 @@ import { Command, InvalidArgumentError } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
@@ -65,6 +65,21 @@ import {
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import {
+  deriveActiveCanonicalBinding,
+  readDeliveryAuthorization,
+  readDeliveryReceipt,
+  revokeDeliveryAuthorization,
+  type AuthRecoveryState,
+  type DeliveryMessageType,
+  type RemoteEvidenceOutcome,
+  type ReconcileDeliveryInput,
+  type TransportBindingIdentity,
+} from "../conversation/authorization.js";
+import { createDurableTransportTransaction } from "../conversation/transaction.js";
+import { assertTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiObservation } from "../conversation/teamai.js";
+import type { GitHubOperationKind, GitHubOperationTarget } from "../conversation/operation.js";
+import type { AuthorizedMessageAdapter } from "../conversation/delivery.js";
+import {
   canonicalRepositoryFor,
   endpointFingerprint,
   getInstallationIdentity,
@@ -126,6 +141,191 @@ function parseChangedFiles(value: string): string[] | number {
     return count;
   }
   return value.split(",").map((file) => file.trim()).filter(Boolean);
+}
+
+const DELIVERY_MESSAGE_TYPES: readonly DeliveryMessageType[] = ["INIT", "HANDOFF", "PLAN", "EXECUTED", "REVIEW", "RE_REVIEW"];
+const REMOTE_EVIDENCE_OUTCOMES: readonly RemoteEvidenceOutcome[] = ["accepted", "pending", "definite_not_accepted", "ambiguous", "failed"];
+const AUTH_RECOVERY_STATES: readonly AuthRecoveryState[] = [
+  "AUTHORIZED_OPERATION_PREPARED",
+  "INTERRUPTED_AUTH_PENDING",
+  "AUTH_CONTEXT_RECONCILING",
+  "TEAMAI_RECOVERY_ACTIVE",
+  "AUTH_HEALTHY",
+  "REMOTE_RECONCILING",
+  "RESUME_ONCE",
+  "COMPLETED",
+  "WAITING_HUMAN_SECURITY_BOUNDARY",
+];
+const GITHUB_OPERATION_KINDS: readonly GitHubOperationKind[] = ["issue_create", "issue_update", "push", "pr_create", "pr_update", "review", "publication"];
+
+function readJsonRecord(fileName: string, maxBytes = 256 * 1024): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readCappedUtf8(path.resolve(fileName), maxBytes)) as unknown;
+  } catch {
+    throw new Error(`invalid JSON input: ${path.basename(fileName)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`JSON input must be an object: ${path.basename(fileName)}`);
+  return parsed as Record<string, unknown>;
+}
+
+function requiredJsonString(record: Record<string, unknown>, key: string, source: string): string {
+  const value = record[key];
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${source} requires string field ${key}`);
+  return value.trim();
+}
+
+function optionalJsonString(record: Record<string, unknown>, key: string, source: string): string | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${source} field ${key} must be a non-empty string`);
+  return value.trim();
+}
+
+function teamAiRepositoryCandidates(): string[] {
+  const candidates: string[] = [];
+  if (process.env.TEAMAI_REPO?.trim()) candidates.push(path.resolve(process.env.TEAMAI_REPO));
+  const profile = process.env.USERPROFILE?.trim();
+  if (profile) {
+    const config = path.join(profile, ".teamai", "config.yaml");
+    if (fs.existsSync(config)) {
+      const configured = fs.readFileSync(config, "utf8").match(/^\s*localPath\s*:\s*["']?([^"'\r\n]+)["']?\s*$/m)?.[1]?.trim();
+      if (configured) candidates.push(path.resolve(configured.replace(/^~[\\/]/, `${profile}${path.sep}`)));
+    }
+    candidates.push(path.join(profile, ".teamai", "team-repo"));
+  }
+  return [...new Set(candidates)];
+}
+
+function assertTeamAiProviderModule(fileName: string): string {
+  const resolved = path.resolve(fileName);
+  let real: string;
+  try {
+    real = fs.realpathSync.native(resolved);
+  } catch {
+    throw new Error("TeamAI github-cli-auth provider module is unavailable");
+  }
+  const normalized = process.platform === "win32" ? real.toLowerCase() : real;
+  const accepted = teamAiRepositoryCandidates().some((candidate) => {
+    try {
+      const root = fs.realpathSync.native(candidate);
+      const rootNormalized = process.platform === "win32" ? root.toLowerCase() : root;
+      const relative = path.relative(rootNormalized, normalized);
+      return !relative.startsWith("..") && !path.isAbsolute(relative) && relative.replace(/\\/g, "/").toLowerCase().includes("skills/github-cli-auth/");
+    } catch {
+      return false;
+    }
+  });
+  if (!accepted) throw new Error("TeamAI provider module must come from the resolved github-cli-auth Skill boundary");
+  return real;
+}
+
+function parseTeamAiObservationInput(fileName: string): TeamAiObservation {
+  const source = path.basename(fileName);
+  const raw = readJsonRecord(fileName);
+  if (Object.prototype.hasOwnProperty.call(raw, "classification")) {
+    throw new Error(`${source} must not contain a classification; TeamAI must supply it`);
+  }
+  return {
+    correlationId: requiredJsonString(raw, "correlationId", source),
+    ...(optionalJsonString(raw, "restrictedContextError", source) ? { restrictedContextError: optionalJsonString(raw, "restrictedContextError", source) } : {}),
+    ...(optionalJsonString(raw, "expectedAccount", source) ? { expectedAccount: optionalJsonString(raw, "expectedAccount", source) } : {}),
+    ...(optionalJsonString(raw, "credentialVisibleAccount", source) ? { credentialVisibleAccount: optionalJsonString(raw, "credentialVisibleAccount", source) } : {}),
+    ...(optionalJsonString(raw, "authAttemptId", source) ? { authAttemptId: optionalJsonString(raw, "authAttemptId", source) } : {}),
+  };
+}
+
+function parseBindingInput(fileName: string): TransportBindingIdentity {
+  const source = path.basename(fileName);
+  const raw = readJsonRecord(fileName);
+  const binding: TransportBindingIdentity = {
+    workspaceId: requiredJsonString(raw, "workspaceId", source),
+    taskId: requiredJsonString(raw, "taskId", source),
+    checkpoint: requiredJsonString(raw, "checkpoint", source),
+    stage: requiredJsonString(raw, "stage", source),
+    eventKey: requiredJsonString(raw, "eventKey", source),
+  };
+  for (const key of [
+    "workstreamId", "workspaceName", "workspaceRoot", "canonicalRepository", "worktreeRoot", "branch", "observedCommit",
+    "installationId", "endpointFingerprint", "connectorName", "mcpAppId", "mcpVersionId", "projectId", "chatId",
+    "codexSessionId", "expectedAccount", "authAttemptId",
+  ] as const) {
+    const value = optionalJsonString(raw, key, source);
+    if (value !== undefined) binding[key] = value;
+  }
+  const dirtyState = raw.dirtyState;
+  if (dirtyState !== undefined) {
+    if (dirtyState !== "clean" && dirtyState !== "dirty" && dirtyState !== "unknown") throw new Error(`${source} field dirtyState is invalid`);
+    binding.dirtyState = dirtyState;
+  }
+  return binding;
+}
+
+function parseDeliveryMessageType(value: string): DeliveryMessageType {
+  if (!DELIVERY_MESSAGE_TYPES.includes(value as DeliveryMessageType)) throw new InvalidArgumentError(`message type must be one of ${DELIVERY_MESSAGE_TYPES.join(", ")}`);
+  return value as DeliveryMessageType;
+}
+
+function parseRemoteEvidenceOutcome(value: string): RemoteEvidenceOutcome {
+  if (!REMOTE_EVIDENCE_OUTCOMES.includes(value as RemoteEvidenceOutcome)) throw new InvalidArgumentError(`outcome must be one of ${REMOTE_EVIDENCE_OUTCOMES.join(", ")}`);
+  return value as RemoteEvidenceOutcome;
+}
+
+function parseAuthRecoveryState(value: string): AuthRecoveryState {
+  if (!AUTH_RECOVERY_STATES.includes(value as AuthRecoveryState)) throw new InvalidArgumentError(`auth state must be one of ${AUTH_RECOVERY_STATES.join(", ")}`);
+  return value as AuthRecoveryState;
+}
+
+function parseOperationTargetInput(fileName: string): GitHubOperationTarget {
+  const source = path.basename(fileName);
+  const raw = readJsonRecord(fileName);
+  const kind = requiredJsonString(raw, "kind", source) as GitHubOperationKind;
+  if (!GITHUB_OPERATION_KINDS.includes(kind)) throw new Error(`${source} field kind is invalid`);
+  const target: GitHubOperationTarget = {
+    kind,
+    repository: requiredJsonString(raw, "repository", source),
+    logicalOperationId: requiredJsonString(raw, "logicalOperationId", source),
+  };
+  for (const key of ["ref", "expectedCommit", "expectedContentHash", "expectedRevision", "headRef", "baseRef", "marker"] as const) {
+    const value = optionalJsonString(raw, key, source);
+    if (value !== undefined) target[key] = value;
+  }
+  for (const key of ["issueNumber", "pullRequestNumber"] as const) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error(`${source} field ${key} must be a positive integer`);
+    target[key] = value;
+  }
+  return target;
+}
+
+function parseOperationObservationInput(fileName: string): NonNullable<ReconcileDeliveryInput["operationObservation"]> {
+  const source = path.basename(fileName);
+  const raw = readJsonRecord(fileName);
+  const observation: Record<string, unknown> = {};
+  for (const key of ["remoteId", "remoteUrl", "observedRepository", "observedCommit", "observedRef", "observedHeadRef", "observedBaseRef", "observedPayloadHash", "observedRevision", "observedMarker"] as const) {
+    const value = optionalJsonString(raw, key, source);
+    if (value !== undefined) observation[key] = value;
+  }
+  for (const key of ["observedIssueNumber", "observedPullRequestNumber", "candidateCount"] as const) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${source} field ${key} must be a non-negative integer`);
+    observation[key] = value;
+  }
+  if (raw.absenceProven !== undefined) {
+    if (typeof raw.absenceProven !== "boolean") throw new Error(`${source} field absenceProven must be boolean`);
+    observation.absenceProven = raw.absenceProven;
+  }
+  if (raw.payloadHash !== undefined) observation.payloadHash = requiredJsonString(raw, "payloadHash", source);
+  return observation as NonNullable<ReconcileDeliveryInput["operationObservation"]>;
+}
+
+function requireAuthorizedMessageAdapter(value: unknown): AuthorizedMessageAdapter {
+  if (!value || typeof value !== "object" || typeof (value as { sendMessage?: unknown }).sendMessage !== "function") {
+    throw new Error("adapter module must export an AuthorizedMessageAdapter");
+  }
+  return value as AuthorizedMessageAdapter;
 }
 
 /** Local harness output only. Never pasted into ChatGPT. */
@@ -1256,6 +1456,370 @@ provisioning
     });
     if (opts.json) say(JSON.stringify({ ok: true, workspaceId: workspace.id, state }));
     else check(`セットアップ状態を記録しました（${state.phase}）`);
+  });
+
+// ---------------------------------------------------------------- transport (internal durable recovery inspection)
+
+const transport = program
+  .command("transport", { hidden: true })
+  .description("Inspect or revoke one durable authorized C2C delivery");
+
+transport
+  .command("begin")
+  .description("Issue canonical workflow authority and prepare one durable delivery")
+  .option("-w, --workspace <path>", "active workspace root; authority is derived from its harness state")
+  .requiredOption("--binding-file <path>", "JSON file containing the exact transport binding")
+  .requiredOption("--message-type <type>", "EXECUTED, REVIEW, or RE_REVIEW")
+  .requiredOption("--stage <stage>")
+  .option("--workflow-step <n>", "canonical workflow step", "5")
+  .option("--issuer-id <id>", "bounded issuer identifier", "c2c-cli")
+  .option("--source-checkpoint <checkpoint>")
+  .option("--source-stage <stage>")
+  .option("--event-key <key>")
+  .requiredOption("--payload-hash <hash>")
+  .option("--operation-target-file <path>", "JSON GitHub operation target")
+  .option("--expires-at <timestamp>")
+  .option("--process-id <id>")
+  .option("--session-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    workspace?: string;
+    bindingFile: string;
+    messageType: string;
+    stage: string;
+    workflowStep: string;
+    issuerId: string;
+    sourceCheckpoint?: string;
+    sourceStage?: string;
+    eventKey?: string;
+    payloadHash: string;
+    operationTargetFile?: string;
+    expiresAt?: string;
+    processId?: string;
+    sessionId?: string;
+    json: boolean;
+  }) => {
+    try {
+      const activeWorkspace = new Workspace(resolveWorkspace(opts.workspace));
+      const binding = deriveActiveCanonicalBinding({
+        workspaceRoot: activeWorkspace.root,
+        workspaceId: activeWorkspace.id,
+        candidate: parseBindingInput(opts.bindingFile),
+      });
+      const messageType = parseDeliveryMessageType(opts.messageType);
+      const workflowStep = parseInteger(opts.workflowStep);
+      if (opts.eventKey?.trim() && opts.eventKey.trim() !== binding.eventKey) throw new Error("event key must match the canonical workflow action");
+      if (opts.sourceCheckpoint?.trim() && opts.sourceCheckpoint.trim() !== binding.checkpoint) throw new Error("source checkpoint must match the canonical workflow checkpoint");
+      if (opts.stage !== binding.stage || (opts.sourceStage?.trim() && opts.sourceStage.trim() !== binding.stage)) throw new Error("stage must match the canonical workflow state");
+      const eventKey = binding.eventKey;
+      const sourceCheckpoint = binding.checkpoint;
+      const sourceStage = binding.stage;
+      const operationTarget = opts.operationTargetFile ? parseOperationTargetInput(opts.operationTargetFile) : undefined;
+      const result = createDurableTransportTransaction().beginAndPrepare({
+        workflowStep,
+        stage: opts.stage,
+        issuerId: opts.issuerId,
+        messageType,
+        binding,
+        sourceCheckpoint,
+        sourceStage,
+        eventKey,
+        payloadHash: opts.payloadHash,
+        ...(operationTarget ? { operationTarget } : {}),
+        ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+        ...(opts.processId ? { processId: opts.processId } : {}),
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      });
+      const payload = {
+        ok: true,
+        eventKey,
+        messageType,
+        authorityId: result.authorization.authorityId,
+        authorizationGeneration: result.authorization.generation,
+        receiptGeneration: result.receipt.generation,
+        receiptState: result.receipt.state,
+        operationKey: result.authorization.operationKey ?? null,
+      };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`永続配送を準備しました（${eventKey} / ${result.receipt.state}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("deliver")
+  .description("Run one authorized delivery through an injected IAB adapter")
+  .requiredOption("--binding-file <path>")
+  .requiredOption("--event-key <key>")
+  .requiredOption("--task-id <id>")
+  .requiredOption("--iteration <n>", "non-negative delivery iteration", parseNonNegativeInteger)
+  .requiredOption("--message-id <id>")
+  .requiredOption("--text-file <path>", "control envelope text file")
+  .requiredOption("--adapter-module <path>", "local module exporting an IAB AuthorizedMessageAdapter")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: {
+    bindingFile: string;
+    eventKey: string;
+    taskId: string;
+    iteration: number;
+    messageId: string;
+    textFile: string;
+    adapterModule: string;
+    json: boolean;
+  }) => {
+    try {
+      const authorization = readDeliveryAuthorization(opts.eventKey);
+      if (!authorization) throw new Error("delivery authorization record not found");
+      const binding = parseBindingInput(opts.bindingFile);
+      if (binding.eventKey !== opts.eventKey || authorization.eventKey !== opts.eventKey) throw new Error("delivery event key does not match the exact binding");
+      const loaded = await import(pathToFileURL(path.resolve(opts.adapterModule)).href);
+      const adapter = requireAuthorizedMessageAdapter(loaded.default ?? loaded.adapter);
+      const text = readCappedUtf8(path.resolve(opts.textFile), 64 * 1024);
+      const transaction = createDurableTransportTransaction();
+      const outcome = await transaction.deliver({
+        taskId: opts.taskId,
+        iteration: opts.iteration,
+        messageId: opts.messageId,
+        text,
+        workspaceId: binding.workspaceId,
+        workstreamId: binding.workstreamId,
+        binding,
+        authorization,
+        messageType: authorization.messageType,
+        payloadHash: authorization.payloadHash,
+        ...(authorization.operationTarget ? { operationTarget: authorization.operationTarget } : {}),
+      }, adapter);
+      const payload = { ok: true, result: outcome.result, state: outcome.state, eventKey: opts.eventKey, sendAttempts: outcome.receipt?.sendAttempts ?? outcome.checkpoint.sendAttempts, receiptState: outcome.receipt?.state ?? null, reason: outcome.reason ?? null };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`配送処理を実行しました（${opts.eventKey} / ${outcome.result}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("observe")
+  .description("Record bounded browser evidence for one prepared delivery")
+  .requiredOption("--binding-file <path>")
+  .requiredOption("--event-key <key>")
+  .requiredOption("--outcome <outcome>", "visible | ambiguous | definite_failure")
+  .option("--remote-id <id>")
+  .option("--evidence-hash <hash>")
+  .option("--observed-event-key <key>")
+  .option("--observed-payload-hash <hash>")
+  .option("--reason <text>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    bindingFile: string;
+    eventKey: string;
+    outcome: string;
+    remoteId?: string;
+    evidenceHash?: string;
+    observedEventKey?: string;
+    observedPayloadHash?: string;
+    reason?: string;
+    json: boolean;
+  }) => {
+    try {
+      const authorization = readDeliveryAuthorization(opts.eventKey);
+      if (!authorization) throw new Error("delivery authorization record not found");
+      const outcome = opts.outcome as "visible" | "ambiguous" | "definite_failure";
+      if (outcome !== "visible" && outcome !== "ambiguous" && outcome !== "definite_failure") throw new InvalidArgumentError("outcome must be visible, ambiguous, or definite_failure");
+      const receipt = createDurableTransportTransaction().observeVisible({
+        authorization,
+        binding: parseBindingInput(opts.bindingFile),
+        outcome,
+        ...(opts.remoteId ? { remoteId: opts.remoteId } : {}),
+        ...(opts.evidenceHash ? { evidenceHash: opts.evidenceHash } : {}),
+        ...(opts.observedEventKey ? { observedEventKey: opts.observedEventKey } : {}),
+        ...(opts.observedPayloadHash ? { observedPayloadHash: opts.observedPayloadHash } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      const payload = { ok: true, eventKey: receipt.eventKey, state: receipt.state, generation: receipt.generation, sendAttempts: receipt.sendAttempts };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`配送観測を記録しました（${receipt.eventKey} / ${receipt.state}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("reconcile")
+  .description("Reconcile one remote operation before any continuation")
+  .requiredOption("--binding-file <path>")
+  .requiredOption("--event-key <key>")
+  .requiredOption("--outcome <outcome>", "accepted | pending | definite_not_accepted | ambiguous | failed")
+  .option("--operation-observation-file <path>", "JSON operation-specific remote proof")
+  .option("--remote-id <id>")
+  .option("--status <status>")
+  .option("--target <target>")
+  .option("--evidence-hash <hash>")
+  .option("--reason <text>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    bindingFile: string;
+    eventKey: string;
+    outcome: string;
+    operationObservationFile?: string;
+    remoteId?: string;
+    status?: string;
+    target?: string;
+    evidenceHash?: string;
+    reason?: string;
+    json: boolean;
+  }) => {
+    try {
+      const authorization = readDeliveryAuthorization(opts.eventKey);
+      if (!authorization) throw new Error("delivery authorization record not found");
+      const outcome = parseRemoteEvidenceOutcome(opts.outcome);
+      const receipt = createDurableTransportTransaction().reconcile({
+        authorization,
+        binding: parseBindingInput(opts.bindingFile),
+        outcome,
+        ...(opts.operationObservationFile ? { operationObservation: parseOperationObservationInput(opts.operationObservationFile) } : {}),
+        ...(opts.remoteId ? { remoteId: opts.remoteId } : {}),
+        ...(opts.status ? { status: opts.status } : {}),
+        ...(opts.target ? { target: opts.target } : {}),
+        ...(opts.evidenceHash ? { evidenceHash: opts.evidenceHash } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      const payload = { ok: true, eventKey: receipt.eventKey, state: receipt.state, generation: receipt.generation, reconciliationAttempts: receipt.reconciliationAttempts, operationOutcome: receipt.operationEvidence?.outcome ?? null };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`リモート照合を記録しました（${receipt.eventKey} / ${receipt.state}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("auth-observe")
+  .description("Pass TeamAI github-cli-auth observations to its resolved capability boundary")
+  .requiredOption("--binding-file <path>")
+  .requiredOption("--event-key <key>")
+  .requiredOption("--state <state>")
+  .requiredOption("--provider-module <path>", "TeamAI-owned provider module under the resolved github-cli-auth Skill")
+  .requiredOption("--observation-file <path>", "bounded observations; classification is prohibited")
+  .option("--reason <text>")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { bindingFile: string; eventKey: string; state: string; providerModule: string; observationFile: string; reason?: string; json: boolean }) => {
+    try {
+      const authorization = readDeliveryAuthorization(opts.eventKey);
+      if (!authorization) throw new Error("delivery authorization record not found");
+      const providerPath = assertTeamAiProviderModule(opts.providerModule);
+      const loaded = await import(pathToFileURL(providerPath).href);
+      const provider = loaded.default ?? loaded.provider;
+      assertTeamAiCapabilityProvider(provider);
+      const observation = parseTeamAiObservationInput(opts.observationFile);
+      const receipt = createDurableTransportTransaction().observeTeamAi({
+        authorization,
+        binding: parseBindingInput(opts.bindingFile),
+        state: parseAuthRecoveryState(opts.state),
+        capabilityResult: resolveTeamAiAuthResult(provider, observation),
+        ...(observation.expectedAccount ? { expectedAccount: observation.expectedAccount } : {}),
+        ...(observation.authAttemptId ? { authAttemptId: observation.authAttemptId } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      const payload = { ok: true, eventKey: receipt.eventKey, state: receipt.state, generation: receipt.generation, authRecovery: receipt.authRecovery ? { state: receipt.authRecovery.state, classifier: receipt.authRecovery.classifier, classification: receipt.authRecovery.classification ?? null } : null };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`TeamAI 認証観測を記録しました（${receipt.eventKey}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("response")
+  .description("Consume one exact visible reviewer response")
+  .requiredOption("--binding-file <path>")
+  .requiredOption("--event-key <key>")
+  .requiredOption("--response-key <key>")
+  .requiredOption("--response-hash <hash>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { bindingFile: string; eventKey: string; responseKey: string; responseHash: string; json: boolean }) => {
+    try {
+      const authorization = readDeliveryAuthorization(opts.eventKey);
+      if (!authorization) throw new Error("delivery authorization record not found");
+      const receipt = createDurableTransportTransaction().consumeResponse({
+        authorization,
+        binding: parseBindingInput(opts.bindingFile),
+        responseKey: opts.responseKey,
+        responseHash: opts.responseHash,
+      });
+      const payload = { ok: true, eventKey: receipt.eventKey, state: receipt.state, generation: receipt.generation, responseConsumedAt: receipt.responseConsumedAt ?? null };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`レビュー応答を一度だけ消費しました（${receipt.eventKey}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+transport
+  .command("status", { isDefault: true })
+  .description("Show sanitized authorization and receipt state for one event")
+  .requiredOption("--event-key <key>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { eventKey: string; json: boolean }) => {
+    const authorization = readDeliveryAuthorization(opts.eventKey);
+    const receipt = readDeliveryReceipt(opts.eventKey);
+    const payload = {
+      ok: Boolean(authorization || receipt),
+      eventKey: opts.eventKey,
+      authorization: authorization
+        ? {
+            generation: authorization.generation,
+            authorityId: authorization.authorityId,
+            messageType: authorization.messageType,
+            operationKey: authorization.operationKey ?? null,
+            revokedAt: authorization.revokedAt ?? null,
+            expiresAt: authorization.expiresAt ?? null,
+          }
+        : null,
+      receipt: receipt
+        ? {
+            generation: receipt.generation,
+            state: receipt.state,
+            sendAttempts: receipt.sendAttempts,
+            reconciliationAttempts: receipt.reconciliationAttempts,
+            operationKey: receipt.operationKey ?? null,
+            responseConsumedAt: receipt.responseConsumedAt ?? null,
+            nextAction: receipt.nextAction ?? null,
+            authRecovery: receipt.authRecovery
+              ? {
+                  state: receipt.authRecovery.state,
+                  classifier: receipt.authRecovery.classifier,
+                  classification: receipt.authRecovery.classification ?? null,
+                  authAttemptId: receipt.authRecovery.authAttemptId ?? null,
+                }
+              : null,
+          }
+        : null,
+    };
+    if (opts.json) {
+      say(JSON.stringify(payload));
+      return;
+    }
+    if (!payload.ok) {
+      say("永続化された配送記録はありません。");
+      return;
+    }
+    say(`イベント：${opts.eventKey}`);
+    if (payload.authorization) say(`権限：${payload.authorization.messageType} / generation ${payload.authorization.generation}`);
+    if (payload.receipt) say(`Receipt：${payload.receipt.state} / generation ${payload.receipt.generation}`);
+  });
+
+transport
+  .command("revoke")
+  .description("Revoke one persisted delivery authority without deleting its evidence")
+  .requiredOption("--event-key <key>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { eventKey: string; json: boolean }) => {
+    const authorization = readDeliveryAuthorization(opts.eventKey);
+    if (!authorization) throw new Error("delivery authorization record not found");
+    const revoked = revokeDeliveryAuthorization(authorization);
+    const payload = { ok: true, eventKey: revoked.eventKey, generation: revoked.generation, revokedAt: revoked.revokedAt ?? null };
+    if (opts.json) say(JSON.stringify(payload));
+    else check(`配送権限を失効させました（${revoked.eventKey}）`);
   });
 
 const prefsCmd = program

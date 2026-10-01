@@ -159,6 +159,42 @@ describe("mergeSession", () => {
     expect(next.checkpoint?.originalGoal?.endsWith("…")).toBe(true);
   });
 
+  it("reconstructs the bounded GitHub operation identity after compaction", () => {
+    const next = mergeSession(
+      {
+        url: "https://chatgpt.com/c/keep",
+        taskId: "c2c_operation",
+        savedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        checkpoint: {
+          protocolState: "EXECUTED_SENT",
+          waitingFor: "GPT_REVIEW",
+          transport: {
+            workspaceId: "workspace-a",
+            eventKey: "c2c_operation",
+            operationKey: "operation-a",
+            operationTarget: {
+              kind: "issue_update",
+              repository: "https://github.com/example/repo",
+              logicalOperationId: "issue-update-6",
+              issueNumber: 6,
+              expectedRevision: "revision-6",
+            },
+          },
+        },
+      }
+    );
+    expect(next.checkpoint?.transport?.operationKey).toBe("operation-a");
+    expect(next.checkpoint?.transport?.operationTarget).toEqual({
+      kind: "issue_update",
+      repository: "https://github.com/example/repo",
+      logicalOperationId: "issue-update-6",
+      issueNumber: 6,
+      expectedRevision: "revision-6",
+    });
+  });
+
   it("leaves legacy sessions without a checkpoint unchanged", () => {
     const next = mergeSession(
       {
