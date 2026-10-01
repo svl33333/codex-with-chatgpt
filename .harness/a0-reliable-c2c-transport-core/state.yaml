@@ -12,7 +12,7 @@ workflow:
     the exact pinned commit was directly validated with Codex-bundled Python.
   step: 7
   stage: Final Review / C2C
-  status: C2C_WAITING
+  status: RUNNING
   last_completed_action: >-
     Received explicit approval of Q311 and A0-AC-024 through A0-AC-027,
     reconciled the approved amendment into live Issue #6 using the
@@ -360,7 +360,7 @@ runner_preflight:
   verified_workspace_id: f5dc2ee0d7ba
   verified_workspace_name: codex-with-chatgpt-a0-reliable-c2c-transport-core
   verified_branch: a0-reliable-c2c-transport-core
-  verified_commit: 65ed0ba33eb29ce4f1c90671469775011c27ea55
+  verified_commit: c0bf843
   workspace_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
   canonical_repository: https://github.com/svl33333/codex-with-chatgpt
   worktree_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
