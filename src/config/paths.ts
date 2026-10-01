@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 
 /**
  * State directory resolution, following OS conventions.
@@ -39,6 +40,50 @@ export function writeSecureJson(file: string, data: unknown): void {
     fs.chmodSync(file, 0o600);
   } catch {
     // best effort on platforms without chmod semantics
+  }
+}
+
+/**
+ * Replace one state record only after the complete JSON payload is durable.
+ * The temporary sibling is deliberately cleaned up without touching the last
+ * valid record when a write or rename fails.
+ */
+export function writeAtomicSecureJson(file: string, data: unknown): void {
+  ensureDir(path.dirname(file));
+  const temporary = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  const serialized = JSON.stringify(data, null, 2);
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(descriptor, serialized, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    try {
+      fs.chmodSync(temporary, 0o600);
+    } catch {
+      // Best effort on platforms without chmod semantics.
+    }
+    fs.renameSync(temporary, file);
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      // Best effort on platforms without chmod semantics.
+    }
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // The descriptor may already be closed by the failed write.
+      }
+    }
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+      // Preserve the original error and leave the prior record untouched.
+    }
+    throw error;
   }
 }
 

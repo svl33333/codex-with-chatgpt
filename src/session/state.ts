@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import type { GitHubOperationTarget } from "../conversation/operation.js";
 
 export type ConversationMode = "long-chat" | "project";
 
@@ -16,6 +17,29 @@ export type ProtocolState =
   | "BLOCKED";
 
 export type WaitingFor = "none" | "GPT_PLAN" | "GPT_REVIEW" | "USER";
+
+/** Bounded, non-secret projection needed to reconstruct a C2C transport. */
+export interface TransportSessionProjection {
+  workspaceId?: string;
+  workspaceRoot?: string;
+  repository?: string;
+  worktreeRoot?: string;
+  branch?: string;
+  observedCommit?: string;
+  dirtyState?: "clean" | "dirty" | "unknown";
+  projectId?: string;
+  chatId?: string;
+  codexSessionId?: string;
+  mcpAppId?: string;
+  mcpVersionId?: string;
+  connectorName?: string;
+  checkpoint?: string;
+  stage?: string;
+  eventKey?: string;
+  payloadHash?: string;
+  operationKey?: string;
+  operationTarget?: GitHubOperationTarget;
+}
 
 export const PROTOCOL_STATES: readonly ProtocolState[] = [
   "INIT",
@@ -40,6 +64,7 @@ export interface TaskCheckpoint {
   nextExpectedStep?: string;
   chatUrl?: string;
   projectUrl?: string;
+  transport?: TransportSessionProjection;
   updatedAt: string;
 }
 
@@ -53,6 +78,7 @@ export interface SavedSession {
   conversationMode?: ConversationMode;
   projectUrl?: string;
   connectorName?: string;
+  transport?: TransportSessionProjection;
   checkpoint?: TaskCheckpoint;
 }
 
@@ -65,6 +91,7 @@ export interface SessionPatch {
   conversationMode?: ConversationMode;
   projectUrl?: string;
   connectorName?: string;
+  transport?: TransportSessionProjection;
   checkpoint?: Partial<TaskCheckpoint> & { protocolState?: ProtocolState };
   clearCheckpoint?: boolean;
 }
@@ -169,11 +196,71 @@ const CHECKPOINT_LIMITS = {
   nextExpectedStep: 400,
 } as const;
 
+const TRANSPORT_LIMITS = {
+  workspaceId: 128,
+  workspaceRoot: 512,
+  repository: 256,
+  worktreeRoot: 512,
+  branch: 256,
+  observedCommit: 128,
+  projectId: 160,
+  chatId: 160,
+  codexSessionId: 256,
+  mcpAppId: 256,
+  mcpVersionId: 256,
+  connectorName: 256,
+  checkpoint: 128,
+  stage: 128,
+  eventKey: 256,
+  payloadHash: 128,
+  operationKey: 128,
+} as const;
+
+const OPERATION_KINDS = ["issue_create", "issue_update", "push", "pr_create", "pr_update", "review", "publication"] as const;
+
+function capOperationTarget(value: GitHubOperationTarget | undefined): GitHubOperationTarget | undefined {
+  if (!value || !OPERATION_KINDS.includes(value.kind)) return undefined;
+  const target: GitHubOperationTarget = {
+    kind: value.kind,
+    repository: capCheckpointText(value.repository, 256) ?? "",
+    logicalOperationId: capCheckpointText(value.logicalOperationId, 256) ?? "",
+    ...(typeof value.issueNumber === "number" && Number.isSafeInteger(value.issueNumber) ? { issueNumber: value.issueNumber } : {}),
+    ...(typeof value.pullRequestNumber === "number" && Number.isSafeInteger(value.pullRequestNumber) ? { pullRequestNumber: value.pullRequestNumber } : {}),
+    ...(capCheckpointText(value.ref, 256) ? { ref: capCheckpointText(value.ref, 256) } : {}),
+    ...(capCheckpointText(value.expectedCommit, 128) ? { expectedCommit: capCheckpointText(value.expectedCommit, 128) } : {}),
+    ...(capCheckpointText(value.expectedContentHash, 128) ? { expectedContentHash: capCheckpointText(value.expectedContentHash, 128) } : {}),
+    ...(capCheckpointText(value.expectedRevision, 128) ? { expectedRevision: capCheckpointText(value.expectedRevision, 128) } : {}),
+    ...(capCheckpointText(value.headRef, 256) ? { headRef: capCheckpointText(value.headRef, 256) } : {}),
+    ...(capCheckpointText(value.baseRef, 256) ? { baseRef: capCheckpointText(value.baseRef, 256) } : {}),
+    ...(capCheckpointText(value.marker, 256) ? { marker: capCheckpointText(value.marker, 256) } : {}),
+  };
+  return target.repository && target.logicalOperationId ? target : undefined;
+}
+
 function capCheckpointText(value: string | undefined, max: number): string | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+function capTransportProjection(value: TransportSessionProjection | undefined): TransportSessionProjection | undefined {
+  if (!value) return undefined;
+  const result: TransportSessionProjection = {};
+  if (value.dirtyState === "clean" || value.dirtyState === "dirty" || value.dirtyState === "unknown") {
+    result.dirtyState = value.dirtyState;
+  }
+  for (const key of Object.keys(TRANSPORT_LIMITS) as (keyof typeof TRANSPORT_LIMITS)[]) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    if (typeof raw === "string") {
+      const capped = capCheckpointText(raw, TRANSPORT_LIMITS[key]);
+      if (capped) result[key] = capped;
+    }
+  }
+  const operationTarget = capOperationTarget(value.operationTarget);
+  if (operationTarget) result.operationTarget = operationTarget;
+  return Object.keys(result).length ? result : undefined;
 }
 
 export function mergeSession(previous: SavedSession | null, patch: SessionPatch): SavedSession {
@@ -246,6 +333,7 @@ export function mergeSession(previous: SavedSession | null, patch: SessionPatch)
       ),
       chatUrl: patch.checkpoint.chatUrl ?? previous?.checkpoint?.chatUrl ?? url,
       projectUrl: patch.checkpoint.projectUrl ?? previous?.checkpoint?.projectUrl ?? projectUrl,
+      transport: capTransportProjection(patch.checkpoint.transport ?? previous?.checkpoint?.transport),
       updatedAt: new Date().toISOString(),
     };
   }
@@ -259,6 +347,7 @@ export function mergeSession(previous: SavedSession | null, patch: SessionPatch)
     conversationMode: conversationMode === "project" && projectUrl ? "project" : conversationMode,
     projectUrl,
     connectorName: patch.connectorName ?? previous?.connectorName,
+    transport: capTransportProjection(patch.transport ?? previous?.transport),
     checkpoint,
     savedAt: new Date().toISOString(),
   };
@@ -274,6 +363,7 @@ export function clearChatPointer(workspaceId: string): { cleared: boolean; keptP
       conversationMode: "project",
       projectUrl: view.projectUrl,
       connectorName: previous.connectorName,
+      transport: previous.transport,
       checkpoint: previous.checkpoint,
       savedAt: new Date().toISOString(),
     });

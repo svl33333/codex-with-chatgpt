@@ -1,0 +1,449 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.3.1
+  spec_commit: 60d17218c256098522e063b5bf4731cecc9c1f12
+  review_contract: schema/c2c-review-contract.json
+  resolver_validation_status: WORKFLOW_VALIDATION_UNAVAILABLE
+  direct_validator_status: passed
+  validation_note: >-
+    Resolver cleanup confirmation is unavailable on this Windows filesystem;
+    the exact pinned commit was directly validated with Codex-bundled Python.
+  step: 7
+  stage: Final Review / Merge
+  status: HUMAN_WAITING
+  last_completed_action: >-
+    Received explicit approval of Q311 and A0-AC-024 through A0-AC-027,
+    reconciled the approved amendment into live Issue #6 using the
+    credential-visible GitHub context, preserved the historical Step 3 C2C
+    PASS and Step 4 route, and resumed the canonical Step 3 plan amendment and
+    independent pre-implementation review. The stale A0 connector was first
+    retried through its supported reconnect path, then the exact broken app was
+    deleted only after explicit user authorization and replaced with a new
+    OAuth-paired binding. Exact A0 workspace_info and git_status now respond;
+    repository origin remains unexposed by that MCP surface. The same logical
+    c2c_9d4e iteration 1 returned FIX_REQUIRED. The plan-only remediation
+    corrected TeamAI ownership of credential-context classification and added
+    operation-specific remote reconciliation evidence/contracts. The same
+    logical iteration-2 re-review returned PASS through the rebound exact A0
+    chat. The amended plan is now presented at the Step 4 direct plan approval
+    Human Gate. The user explicitly approved the direct Step 4 plan gate at
+    2026-10-01T08:51:47Z, so the canonical workflow advanced to Step 5. The
+    approved Q311 plan was implemented and validated locally. The bounded
+    post-implementation C2C review at c2c_bc5c iteration 0 returned
+    FIX_REQUIRED; autonomous source, durable-state, runtime-path, and test
+    remediation is complete, and iteration 1 returned FIX_REQUIRED through
+    the exact rebound A0 Project/chat. The second autonomous remediation now
+    adds canonical-state issuer binding, TeamAI capability provenance,
+    logical-operation-only keys with operation leases/generation, strict
+    visible-response gating, and an executable transaction/adapter seam. The
+    same logical checkpoint's iteration 2 returned FIX_REQUIRED for active
+    workspace authority derivation, TeamAI provider provenance, and live-owner
+    operation lease/CAS protection. The third autonomous remediation derives
+    the active workstream/checkpoint/stage from harness state, binds operation
+    identity to the canonical action, requires a TeamAI-branded provider module,
+    and protects live operation owners from stale lease reclamation. The same
+    logical checkpoint's iteration 3 returned FIX_REQUIRED for caller-controlled
+    action/event and optional exact-binding dimensions, missing repository proof
+    for push and authoritative absence, and required concurrency/provenance
+    coverage. The fourth autonomous remediation now derives complete active
+    binding and deterministic action identity, enforces exact repository
+    evidence, and adds live-owner/competing-process regression tests. Iteration
+    4 of the same logical checkpoint returned PASS through the exact A0
+    Project/chat. Typecheck/build, focused 51/51 tests, and the recorded
+    broader 230/237 validation evidence are preserved; the seven host-limited
+    subprocess failures are recorded as uv_os_get_passwd: ENOMEM. The
+    implementation is complete locally. The user explicitly approved the
+    canonical Step 6 Push/PR publication Human Gate at 2026-10-01T11:14:48Z;
+    commit, push, and one A0 pull-request publication are now authorized. No
+    merge approval is implied by this gate. Implementation commit
+    f4274745c6891a4e61d833869c001713253a556c and state/publication commit
+    65ed0ba were pushed to the canonical remote; PR #7 was created against
+    release/v0.1.3-svl.13. No remote checks are currently reported. The
+    canonical workflow now requests Step 7 final review; merge remains
+    prohibited. The exact A0 final review at c2c_f427 iteration 0 returned
+    FIX_REQUIRED because mutable commit/dirty observations were treated as
+    long-lived binding identity. The canonical autonomous remediation in
+    5562aeca6aa203ae8a25dccac8773028f5e4a18c separates immutable binding
+    identity from event-time evidence, refreshes current observations during
+    reconstruction, and adds deterministic regression coverage. Typecheck and
+    build pass, the focused suite is 52/52, and the full suite is 231/238
+    with seven explicit uv_os_get_passwd: ENOMEM host-limited CLI cases. The
+    same logical checkpoint's iteration-1 re-review returned PASS through the
+    exact A0 Project/chat. Codex final-diff and validation checks are complete;
+    the canonical next action is the Step 7 merge approval Human Gate. No
+    merge is authorized by the current state.
+  prior_step4_approval:
+    route: direct
+    artifact: 02-plan.md
+    approved: false
+    superseded_by: Q311_requirements_amendment
+  step4_approval:
+    route: direct
+    artifact: 02-plan.md
+    approved: true
+    approved_at: "2026-10-01T08:51:47Z"
+  step6_approval:
+    route: push_pr_publication
+    approved: true
+    approved_at: "2026-10-01T11:14:48Z"
+    plan_identity: a0-reliable-c2c-transport-core-q311-amended
+    checkpoint: c2c_bc5c
+    review_iteration: 4
+    review_verdict: PASS
+  requirements_approval:
+    status: APPROVED
+    approved_qids:
+      - Q301
+      - Q302
+      - Q303
+      - Q304
+      - Q305
+      - Q306
+      - Q307
+      - Q308
+      - Q309
+      - Q310
+      - Q311
+    pending_qids: []
+    approved_at: "2026-10-01T07:01:37Z"
+    source: explicit user approval of Q311 and A0-AC-024 through A0-AC-027
+    previous_approved_at: "2026-09-30T04:46:50Z"
+    previous_source: explicit user approval using recorded recommendations
+    amendment_artifact: .harness/a0-reliable-c2c-transport-core/00-requirements-working.md
+    amendment_section: "18"
+    amendment_acceptance_criteria:
+      - A0-AC-024
+      - A0-AC-025
+      - A0-AC-026
+      - A0-AC-027
+    amendment_status: APPROVED
+    approved_acceptance_criteria:
+      - A0-AC-024
+      - A0-AC-025
+      - A0-AC-026
+      - A0-AC-027
+    next_canonical_step: Step 6 PR / Push Waiting
+    deferred_by_task_scope: false
+    issue_update_pending: false
+    issue_reconciled_at: "2026-10-01T07:01:37Z"
+    issue_reconciliation: >-
+      Issue #6 remains the requirements authority and now contains the approved
+      Q311 ownership boundary, A0-AC-024 through A0-AC-027, durable recovery
+      contract, and required coverage.
+    issue_publication_authorized_at: "2026-09-30T05:10:00Z"
+issue:
+  number: 6
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/6
+pr:
+  number: 7
+  url: https://github.com/svl33333/codex-with-chatgpt/pull/7
+  state: OPEN
+  draft: false
+  base_branch: release/v0.1.3-svl.13
+  base_head: 13d13f0a05bfaa102394de7145607241d9da1c48
+  head_branch: a0-reliable-c2c-transport-core
+  head_sha: aaf9984ed8e965d684d21eeb49b00e27dbc285ee
+  checks_status: NO_CHECKS_REPORTED
+plan:
+  artifact: .harness/a0-reliable-c2c-transport-core/02-plan.md
+  identity: a0-reliable-c2c-transport-core-q311-amended
+  amendment: Q311 / A0-AC-024..027
+  status: READY_FOR_MERGE
+  source_implementation: complete_locally
+git:
+  branch: a0-reliable-c2c-transport-core
+  source_branch: release/v0.1.3-svl.13
+  base_branch: release/v0.1.3-svl.13
+  base_head: 13d13f0a05bfaa102394de7145607241d9da1c48
+  remote_status: PUBLISHED
+  remote_url: https://github.com/svl33333/codex-with-chatgpt.git
+  remote_branch: a0-reliable-c2c-transport-core
+  remote_head: aaf9984ed8e965d684d21eeb49b00e27dbc285ee
+  remote_checks: no checks reported
+artifacts:
+  - CONTEXT.md
+  - .harness/a0-reliable-c2c-transport-core/00-workflow-resolution.md
+  - .harness/a0-reliable-c2c-transport-core/00-requirements-working.md
+  - .harness/a0-reliable-c2c-transport-core/00-workspace-preflight.md
+  - .harness/a0-reliable-c2c-transport-core/02-plan-draft.md
+  - .harness/a0-reliable-c2c-transport-core/02-plan.md
+  - .harness/a0-reliable-c2c-transport-core/04-test-summary.md
+c2c:
+  prior_post_implementation_checkpoint: c2c_bc5c
+  prior_post_implementation_task_id: c2c_bc5c
+  prior_post_implementation_event_key: c2c_bc5c
+  prior_post_implementation_review_stage: post_implementation
+  prior_post_implementation_verdict: PASS
+  prior_post_implementation_iteration: 4
+  post_implementation_history_preserved: true
+  checkpoint: c2c_f427
+  task_id: c2c_f427
+  event_key: c2c_f427
+  authorized_action: EXECUTED
+  review_stage: final
+  verdict: PASS
+  cycle: 0
+  attempt_iteration: 1
+  last_action: REVIEW_PASS
+  human_action_queue: []
+  last_review_verdict: PASS
+  last_review_checkpoint: c2c_9d4e
+  last_review_iteration: 2
+  last_review_stage: pre_implementation
+  last_review_recorded_at: "2026-10-01T07:48:37Z"
+  last_review_evidence: >-
+    Independent exact-A0 review PASS after plan-only remediation. TeamAI
+    github-cli-auth is the sole classifier; per-operation remote evidence and
+    exactly-once reconciliation rules are explicit. Live Issue retrieval is
+    not exposed by the exact MCP surface and remains a recorded limitation.
+  prior_attempt_verdict: FIX_REQUIRED
+  prior_attempt_iteration: 1
+  remediation_applied_at: "2026-10-01T07:45:28Z"
+  remediation_scope: plan_only
+  remediation_summary: >-
+    TeamAI github-cli-auth is now the sole classifier for authentication and
+    credential-context observations; A0 supplies bounded observations and owns
+    only workflow consequences. The plan now defines operation-specific remote
+    evidence and tests for Issue, push, PR, review, and publication exactly-once
+    reconciliation, including ambiguous and same-key/different-payload cases.
+  review_retry_ready: false
+  current_review_started_at: "2026-10-01T11:35:59Z"
+  current_attempt_prior_verdict: FIX_REQUIRED
+  current_attempt_prior_iteration: 0
+  current_attempt_verdict: PASS
+  current_review_completed_at: "2026-10-01T11:44:35Z"
+  current_review_checkpoint: c2c_f427
+  current_review_iteration: 1
+  current_review_stage: final
+  current_remediation_applied_at: "2026-10-01T10:23:37Z"
+  current_remediation_scope: source_and_tests
+  current_remediation_summary: >-
+    Iteration 1 FIX_REQUIRED findings were remediated without changing plan
+    semantics or external resources. The issuer now derives and verifies the
+    actual canonical state schema, Step 5 stage, Step 4 approval, workspace
+    root, checkpoint, and authorized action. TeamAI observations require a
+    branded current github-cli-auth capability result. Operation keys use only
+    the workflow-issued logical operation identity, with an owner-checked
+    operation lease and generation. WAITING_RESPONSE cannot be consumed until
+    exact visible event/payload proof. The transaction seam is executable via
+    the IAB adapter and hidden recovery CLI. Added issuer, provenance,
+    operation-conflict, visible-response, and transaction-surface tests. The
+    third remediation derives active authority from the selected workspace
+    harness, binds operation identities to canonical action event keys,
+    requires a TeamAI-owned provider module instead of result-file
+    classifications, and rejects stale reclamation of a live operation owner
+    while applying generation CAS on rehydration. The fourth remediation
+    derives the complete active binding and deterministic action/event identity
+    from the harness, rejects caller-selected Step 5 actions, requires exact
+    repository proof for push and authoritative absence, and adds live-owner,
+    competing-process, and provenance regression coverage. No Issue #6,
+    credentials, or unrelated workstreams were changed. Step 7 final-review
+    iteration 0 then found that mutable observed commit and dirty-state
+    evidence was incorrectly part of long-lived binding identity. Commit
+    5562aeca6aa203ae8a25dccac8773028f5e4a18c removes those mutable
+    observations from the durable comparator and digest, validates them as
+    event-time evidence, refreshes them from the active worktree, and adds a
+    deterministic publication-only state-change regression.
+  current_attempt_history:
+    - iteration: 0
+      verdict: FIX_REQUIRED
+      summary: >-
+        Reviewer required durable generation/CAS, strict visible-bubble proof,
+        operation-specific reconciliation, identity persistence, stale auth
+        suppression, runtime inspection, and deterministic coverage.
+    - iteration: 1
+      verdict: FIX_REQUIRED
+      summary: >-
+        Reviewer required canonical-state issuer binding, TeamAI capability
+        provenance, logical-operation-only keys, operation serialization/CAS,
+        distinct non-confirmed waiting, executable runtime wiring, target
+        identity proof, and integration coverage.
+    - iteration: 2
+      verdict: FIX_REQUIRED
+      summary: >-
+        Reviewer required active-workspace/harness authority derivation instead
+        of free-form binding authority, a TeamAI-resolved provider channel
+        instead of self-asserted result JSON, and live-owner-safe operation
+        lease/CAS protection.
+    - iteration: 3
+      verdict: FIX_REQUIRED
+      summary: >-
+        Reviewer required complete active binding and canonical action/event
+        identity, unconditional repository proof for push and authoritative
+        absence, and live-owner/competing-process plus CLI provenance coverage.
+    - iteration: 4
+      verdict: PASS
+      summary: >-
+        Exact A0 review verified complete active-harness binding and canonical
+        action/event authority, TeamAI github-cli-auth provenance, immutable
+        operation identity with lease/CAS protection, repository-bound
+        reconciliation, visible-bubble and response-consumption guards,
+        compaction/session reconstruction, runtime transaction wiring, and
+        preservation of security and unrelated-workstream boundaries.
+  final_review_history:
+    - iteration: 0
+      verdict: FIX_REQUIRED
+      checkpoint: c2c_f427
+      review_stage: final
+      summary: >-
+        Exact A0 review found that observedCommit and dirtyState from
+        state.yaml were treated as immutable long-lived binding identity. A
+        later state/publication-only commit could therefore invalidate an
+        otherwise matching workspace/session reconstruction. The required
+        remediation was limited to separating immutable identity from
+        event-time evidence, refreshing current observations, and adding a
+        deterministic regression.
+    - iteration: 1
+      verdict: PASS
+      checkpoint: c2c_f427
+      review_stage: final
+      summary: >-
+        Exact A0 re-review verified the event-time commit/dirty refresh,
+        unchanged immutable authority digest, immutable mismatch rejection,
+        all c2c_bc5c iteration-4 PASS guarantees, Q311 ownership/security
+        boundaries, and the recorded validation evidence. No remaining
+        implementation-level finding was identified.
+  current_review_intent: >-
+    Step 7 final review at c2c_f427 iteration 1 returned PASS through the exact
+    A0 Project/chat. Codex final-diff validation is complete; await the explicit
+    merge approval Human Gate for PR #7.
+  prior_attempt_capability_failure: >-
+    Exact A0 MCP workspace_info and read_file calls returned internal errors;
+    the reviewer did not substitute another connector or local evidence.
+  binding_recovery:
+    non_destructive_attempt: reconnect
+    attempted_at: "2026-10-01T07:28:06Z"
+    result: >-
+      The supported reconnect flow reused the existing app identity but called
+      the reclaimed endpoint and failed with ERR_NAME_NOT_RESOLVED. The app
+      management view exposes no endpoint-edit or rebind control.
+    old_binding_status: historical_stale
+    old_app_id: asdk_app_6abc7744876481918124a2c642d094ef
+    old_version_id: asdk_app_v_6abc7744876c81919630f7ff48300b9d
+    old_mcp_url: https://metadata-technical-pie-loops.trycloudflare.com/mcp
+    replacement_authorized: true
+    replacement_authority: explicit user instruction after non-destructive recovery failure
+    replacement_created_at: "2026-10-01T07:40:19Z"
+    new_binding_status: active
+    new_app_id: asdk_app_6abe0cf11ed08191a42b86ad340dae43
+    new_version_id: asdk_app_v_6abe0cf11ed88191806ce5ed6d7fe01e
+    new_mcp_url: https://bennett-java-markers-bridal.trycloudflare.com/mcp
+    oauth_paired: true
+    replacement_recovery_completed: true
+    workspace_info_verified: true
+    git_status_verified: true
+    repository_mcp_visibility: not_exposed
+    repository_local_origin: svl33333/codex-with-chatgpt
+    verified_workspace_id: f5dc2ee0d7ba
+    verified_workspace_name: codex-with-chatgpt-a0-reliable-c2c-transport-core
+    verified_branch: a0-reliable-c2c-transport-core
+    verified_head: 13d13f0a05bfaa102394de7145607241d9da1c48
+    review_retry_authorized: true
+    c2c_delivery_reconciled: true
+    c2c_delivery_reconciliation: >-
+      c2c_9d4e iteration 0 remains preserved as
+      REQUIRED_CAPABILITY_UNAVAILABLE transport evidence. No valid review
+      response was delivered, so one bounded retry of the same logical review
+      is authorized; c2c_b7e2/PASS remains historical only.
+  historical_review:
+    checkpoint: c2c_b7e2
+    review_stage: pre_implementation
+    verdict: PASS
+    cycle: 3
+    artifact: .harness/a0-reliable-c2c-transport-core/02-plan.md
+    superseded_by: Q311_requirements_amendment
+implementation:
+  started_at: "2026-10-01T08:51:47Z"
+  completed_at: "2026-10-01T09:28:25Z"
+  scope: approved_02-plan.md_only
+  remediation_completed_at: "2026-10-01T09:51:55Z"
+  remediation_scope: source_and_tests
+  commit_push_pr_publication: authorized_after_step6_approval
+  review_completed_at: "2026-10-01T10:30:01.1909022Z"
+  next_review_stage: merge_human_gate
+  final_review_iteration_0_verdict: FIX_REQUIRED
+  final_review_remediation_commit: 5562aeca6aa203ae8a25dccac8773028f5e4a18c
+  final_review_iteration_1_verdict: PASS
+  final_review_completed_at: "2026-10-01T11:44:35Z"
+runner_preflight:
+  status: READY
+  current_status: WORKSPACE_INFO_VERIFIED
+  current_connector_authorized: true
+  current_review_session_ready: true
+  current_reason: >-
+    exact replacement A0 binding is OAuth paired; workspace_info and git_status
+    respond in the rebound Project/chat. Repository origin is not exposed by
+    the available A0 MCP identity surface.
+  status_scope: >-
+    Runner readiness only; canonical workflow state is recorded under
+    workflow.status. All four readiness phases are observed.
+  workspace_ready: true
+  local_runtime_ready: true
+  mcp_binding_ready: true
+  review_session_ready: true
+  phase: ready
+  connector_authorized: true
+  connector_identity_verified: true
+  workspace_info_verified: true
+  project_binding: rebound
+  project_url: https://chatgpt.com/g/g-p-6abc8031691c819185f50e07de7422b6/project
+  chat_url: https://chatgpt.com/g/g-p-6abc8031691c819185f50e07de7422b6-codex-with-chatgpt-a0-reliable-c2c-transport-core/c/6abc88ad-4bb8-83e8-8c95-c0bbba2dd9f1
+  connector_name: "Codex with ChatGPT · codex-with-chatgpt-a0-reliable-c2c-t · 2aa24f13"
+  connector_app_id: asdk_app_6abe0cf11ed08191a42b86ad340dae43
+  connector_version_id: asdk_app_v_6abe0cf11ed88191806ce5ed6d7fe01e
+  connector_mcp_url: https://bennett-java-markers-bridal.trycloudflare.com/mcp
+  stale_binding:
+    status: historical_stale
+    app_id: asdk_app_6abc7744876481918124a2c642d094ef
+    version_id: asdk_app_v_6abc7744876c81919630f7ff48300b9d
+    mcp_url: https://metadata-technical-pie-loops.trycloudflare.com/mcp
+    recovery_attempt: reconnect
+    recovery_result: ERR_NAME_NOT_RESOLVED
+  workspace_id: f5dc2ee0d7ba
+  verified_workspace_id: f5dc2ee0d7ba
+  verified_workspace_name: codex-with-chatgpt-a0-reliable-c2c-transport-core
+  verified_branch: a0-reliable-c2c-transport-core
+  verified_commit: aaf9984ed8e965d684d21eeb49b00e27dbc285ee
+  workspace_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
+  canonical_repository: https://github.com/svl33333/codex-with-chatgpt
+  worktree_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
+  dirty_state: clean
+  installation_id: 2aa24f13-b64e-45d1-8b78-12e0d793ef1c
+  endpoint_fingerprint: aeb2c4e50ded2bc4d61d5018
+  project_id: g-p-6abc8031691c819185f50e07de7422b6
+  chat_id: 6abc88ad-4bb8-83e8-8c95-c0bbba2dd9f1
+  codex_session_id: c2c_f427
+  binding: >-
+    A0-local binding created by stable runtime; the replacement exact MCP app
+    is authorized and paired. The dedicated A0 Project is Project-only, library
+    access is disabled, the exact replacement connector is configured in its
+    instructions, and the final in-Project review chat's workspace_info and
+    git_status verification matches A0. The repository origin is not exposed by
+    the available MCP identity surface and is recorded only as local
+    corroboration.
+  local_doctor: passed
+  stable_runtime: 0.1.3-svl.13
+  endpoint_mode: ephemeral
+  tunnel_policy: named
+  tunnel_resolution: quick-fallback-after-named-provision-failure
+  reasoning_guard: >-
+    Desired Extra High/極高 must be verified before any outbound ChatGPT/C2C
+    event; live setting inspection is unavailable in this session. Actual
+    app-configured model is GPT-6; no new Human Gate is introduced.
+  regression_rule: >-
+    Every new workstream reaches WORKSPACE_READY before canonical development
+    activity depends on C2C review transport. WORKSPACE_READY is automatic
+    runner preflight, not a canonical Human Gate. One broken workspace binding
+    must not block unrelated workstreams.
+next:
+  action: await explicit Step 7 merge approval Human Gate for PR #7
+  blocked_on: merge approval
+  historical_next_action: await Step 4 direct plan approval
+execution_policy:
+  desired: "GPT-5.6 Luna Max / Fast mode"
+  actual: "app-configured GPT-6"
+  compliance: "unavailable in this session"
+  human_gate_due_to_model_limitation: false
+updated_at: "2026-10-01T11:44:35Z"

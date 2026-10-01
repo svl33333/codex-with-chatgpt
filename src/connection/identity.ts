@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
-import { runGit } from "../workspace/git.js";
+import { gitInfo, runGit } from "../workspace/git.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
 
@@ -22,6 +22,19 @@ export interface ConnectionBinding {
   connectorName: string;
   projectId?: string;
   updatedAt: string;
+}
+
+/** Stable, non-secret identity projection used to bind durable transport state. */
+export interface WorktreeIdentity {
+  workspaceRoot: string;
+  worktreeRoot: string;
+  canonicalRepository: string;
+  branch: string;
+  observedCommit: string;
+  dirtyState: "clean" | "dirty" | "unknown";
+  installationId: string;
+  endpointFingerprint?: string;
+  connectorName?: string;
 }
 
 function installationFile(): string {
@@ -71,6 +84,35 @@ export function canonicalRepositoryFor(workspaceRoot: string): string {
   if (normalized) return normalized;
   return `file:${path.resolve(repoRoot)}`;
 }
+
+export function worktreeRootFor(workspaceRoot: string): string {
+  const result = runGit(workspaceRoot, ["rev-parse", "--show-toplevel"]);
+  return result.ok && result.stdout.trim() ? path.resolve(result.stdout.trim()) : path.resolve(workspaceRoot);
+}
+
+export function readWorktreeIdentity(input: {
+  workspaceRoot: string;
+  endpoint?: string | null;
+  endpointMode?: EndpointMode;
+  connectorName?: string | null;
+}): WorktreeIdentity {
+  const info = gitInfo(input.workspaceRoot);
+  const installation = getInstallationIdentity();
+  const mode = input.endpointMode ?? "ephemeral";
+  return {
+    workspaceRoot: path.resolve(input.workspaceRoot),
+    worktreeRoot: worktreeRootFor(input.workspaceRoot),
+    canonicalRepository: canonicalRepositoryFor(input.workspaceRoot),
+    branch: info.branch ?? "unknown",
+    observedCommit: info.commit ?? "unknown",
+    dirtyState: info.isRepo ? (info.dirty ? "dirty" : "clean") : "unknown",
+    installationId: installation.installationId,
+    endpointFingerprint: input.endpoint === undefined ? undefined : endpointFingerprint(input.endpoint, mode),
+    connectorName: input.connectorName?.trim() || undefined,
+  };
+}
+
+export const buildWorktreeIdentity = readWorktreeIdentity;
 
 export function endpointFingerprint(endpoint: string | null | undefined, mode: EndpointMode): string {
   const normalized = endpoint ? endpoint.trim().replace(/\/+$/, "").toLowerCase() : "";

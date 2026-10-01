@@ -227,6 +227,50 @@ Before any workflow that can touch a connector or send a control message:
    verification. A healthy saved phase is reusable by a new Codex session;
    never use an acknowledgement-only chat reply as a synchronization primitive.
 
+### Durable transport and recovery guard
+
+For an authorized control event, reload the pinned workflow step, exact
+workspace/repository/worktree and Project/chat/session/app binding, the event
+authorization, and its receipt after compaction, restart, browser reconnect, or
+session reconstruction. The runtime must persist the prepared and sending
+states before the single composer submit and must observe the visible remote
+bubble before treating the event as delivered. A timeout, lost process, or
+missing bubble enters reconciliation; it never permits a blind resend. Query
+the exact remote target and payload evidence first, and retry only the same
+logical event after a proven pre-accept failure. A duplicate callback or
+review response is consumed once by response key/hash.
+
+At send time, inspect the live reasoning setting and request Extra High/
+`極高` where the product supports it. Record only bounded reasoning
+observation/correction status; do not infer success from a requested setting.
+The IAB adapter owns composer and visible-bubble mechanics, while the local
+transport owns only the durable transaction and reconciliation guard.
+
+The executable boundary is `createDurableTransportTransaction()`: the IAB
+runtime calls `beginAndPrepare` before submit, `markSending` and
+`observeVisible` around the single composer action, `observeTeamAi` for a
+branded result from `resolveTeamAiAuthResult`, `reconcile` for the exact
+operation target, and `consumeResponse` only after an exact visible bubble.
+The hidden CLI mirrors those recovery phases with `c2c transport begin`,
+`observe`, `auth-observe`, `reconcile`, and `response` for crash/session
+reconstruction. A0 callers cannot provide a bare authentication
+`classification`; only a current TeamAI `github-cli-auth` capability result
+with verified source, skill name, version, and correlation is accepted.
+
+If a GitHub operation is interrupted by authentication, reload the original
+operation authorization and exact binding before recovery. Resolve the current
+TeamAI `github-cli-auth` capability and pass it bounded observations; TeamAI
+alone classifies credential-context mismatch versus genuine invalid/expired
+authentication and owns device flow, browser interaction, connected-mail
+verification, account context, and security boundaries. A0 records correlation,
+reconstructs after compaction/session loss, reconciles the original remote
+operation, and continues it once after TeamAI reports healthy credentials. The
+text `hosts.yml: Access is denied` is never an A0-local authentication verdict.
+CAPTCHA, unsupported 2FA, password/account recovery, ambiguous account,
+unexpected SSO or organization approval, and scope/privilege expansion remain
+human/security boundaries. Never persist tokens, cookies, pairing codes,
+headers, raw email, source, diffs, logs, or unbounded page text.
+
 ## Daily update check
 
 At the START of every workflow below (before anything else), run these two
