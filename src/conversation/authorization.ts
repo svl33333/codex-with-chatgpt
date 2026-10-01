@@ -320,32 +320,37 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Long-lived transport identity. Commit and dirty-state observations are
+ * deliberately excluded: they are event-time evidence refreshed from the
+ * active worktree during reconstruction, not connection identity.
+ */
+const IMMUTABLE_BINDING_FIELDS: readonly string[] = [
+  "workspaceId",
+  "workstreamId",
+  "workspaceName",
+  "workspaceRoot",
+  "canonicalRepository",
+  "worktreeRoot",
+  "branch",
+  "installationId",
+  "endpointFingerprint",
+  "connectorName",
+  "mcpAppId",
+  "mcpVersionId",
+  "projectId",
+  "chatId",
+  "codexSessionId",
+  "taskId",
+  "checkpoint",
+  "stage",
+  "eventKey",
+];
+
+const EVENT_TIME_BINDING_FIELDS = ["observedCommit", "dirtyState"] as const;
+
 function bindingFields(): string[] {
-  return [
-    "workspaceId",
-    "workstreamId",
-    "workspaceName",
-    "workspaceRoot",
-    "canonicalRepository",
-    "worktreeRoot",
-    "branch",
-    "observedCommit",
-    "dirtyState",
-    "installationId",
-    "endpointFingerprint",
-    "connectorName",
-    "mcpAppId",
-    "mcpVersionId",
-    "projectId",
-    "chatId",
-    "codexSessionId",
-    "expectedAccount",
-    "authAttemptId",
-    "taskId",
-    "checkpoint",
-    "stage",
-    "eventKey",
-  ];
+  return [...IMMUTABLE_BINDING_FIELDS, "expectedAccount", "authAttemptId"];
 }
 
 export function bindingMismatchFields(
@@ -678,11 +683,7 @@ function canonicalWorkflowSnapshot(file: string): CanonicalWorkflowSnapshot {
   };
 }
 
-const CANONICAL_BINDING_FIELDS: readonly string[] = [
-  "workspaceId", "workstreamId", "workspaceName", "workspaceRoot", "canonicalRepository", "worktreeRoot",
-  "branch", "observedCommit", "dirtyState", "installationId", "endpointFingerprint", "connectorName",
-  "mcpAppId", "mcpVersionId", "projectId", "chatId", "codexSessionId", "taskId", "checkpoint", "stage", "eventKey",
-];
+const CANONICAL_BINDING_FIELDS: readonly string[] = IMMUTABLE_BINDING_FIELDS;
 
 function bindingDigest(binding: TransportBindingIdentity): string {
   const projection = Object.fromEntries(CANONICAL_BINDING_FIELDS.map((field) => [field, binding[field as keyof TransportBindingIdentity] ?? null]));
@@ -698,8 +699,6 @@ function assertCanonicalBindingAgainstSnapshot(binding: TransportBindingIdentity
     canonicalRepository: snapshot.canonicalRepository,
     worktreeRoot: path.resolve(snapshot.worktreeRoot),
     branch: snapshot.branch,
-    observedCommit: snapshot.observedCommit,
-    dirtyState: snapshot.dirtyState,
     installationId: snapshot.installationId,
     endpointFingerprint: snapshot.endpointFingerprint,
     connectorName: snapshot.connectorName,
@@ -723,6 +722,19 @@ function assertCanonicalBindingAgainstSnapshot(binding: TransportBindingIdentity
     if (typeof actual !== "string" || !actual.trim()) throw new Error(`canonical transport binding is incomplete: ${String(field)}`);
     const normalizedActual = field === "workspaceRoot" || field === "worktreeRoot" ? path.resolve(actual) : actual;
     if (normalizedActual !== wanted) throw new Error(`canonical transport binding mismatch: ${String(field)}`);
+  }
+  // Commit and dirty state are retained as required event-time evidence, but
+  // they are refreshed from the active worktree and never used as durable
+  // connection identity. A later state/publication commit must not invalidate
+  // an otherwise matching workspace/session binding.
+  for (const field of EVENT_TIME_BINDING_FIELDS) {
+    const actual = binding[field];
+    if (field === "observedCommit" && (typeof actual !== "string" || !actual.trim())) {
+      throw new Error("canonical transport binding is incomplete: observedCommit");
+    }
+    if (field === "dirtyState" && actual !== "clean" && actual !== "dirty" && actual !== "unknown") {
+      throw new Error("canonical transport binding is incomplete: dirtyState");
+    }
   }
 }
 
@@ -775,8 +787,6 @@ export function deriveActiveCanonicalBinding(input: ActiveCanonicalWorkflowBindi
   const activeWorktree = readWorktreeIdentity({ workspaceRoot: root });
   if (snapshot.workspaceRoot !== root || snapshot.canonicalRepository !== activeWorktree.canonicalRepository ||
       snapshot.worktreeRoot !== activeWorktree.worktreeRoot || snapshot.branch !== activeWorktree.branch ||
-      !(snapshot.observedCommit === activeWorktree.observedCommit || snapshot.observedCommit.startsWith(activeWorktree.observedCommit)) ||
-      snapshot.dirtyState !== activeWorktree.dirtyState ||
       snapshot.installationId !== activeWorktree.installationId) {
     throw new Error("canonical state does not match the active workspace worktree identity");
   }
@@ -790,8 +800,11 @@ export function deriveActiveCanonicalBinding(input: ActiveCanonicalWorkflowBindi
     canonicalRepository: snapshot.canonicalRepository,
     worktreeRoot: snapshot.worktreeRoot,
     branch: snapshot.branch,
-    observedCommit: snapshot.observedCommit,
-    dirtyState: snapshot.dirtyState,
+    // Refresh mutable observations from the active worktree. The harness
+    // state remains useful evidence, but a later state/publication commit or
+    // dirty-state transition must not change the binding identity.
+    observedCommit: activeWorktree.observedCommit,
+    dirtyState: activeWorktree.dirtyState,
     installationId: snapshot.installationId,
     endpointFingerprint: snapshot.endpointFingerprint,
     connectorName: snapshot.connectorName,

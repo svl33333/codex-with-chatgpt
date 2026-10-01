@@ -237,6 +237,37 @@ describe("durable authorized C2C delivery", () => {
     })).toThrow(/incomplete/);
   });
 
+  it("refreshes commit and dirty evidence after publication-only state changes", () => {
+    const exact = binding("c2c_event_time_refresh");
+    const before = issuerFor(exact, stateDir);
+    const statePath = path.join(stateDir, ".harness", exact.workstreamId!, "state.yaml");
+    const staleDirtyState = exact.dirtyState === "clean" ? "dirty" : "clean";
+    const state = fs.readFileSync(statePath, "utf8")
+      .replace(`verified_commit: ${exact.observedCommit}`, "verified_commit: stale-publication-commit")
+      .replace(`dirty_state: ${exact.dirtyState}`, `dirty_state: ${staleDirtyState}`);
+    fs.writeFileSync(statePath, state);
+
+    const refreshed = deriveActiveCanonicalBinding({ workspaceRoot: stateDir, workspaceId: exact.workspaceId, candidate: exact });
+    const activeWorktree = readWorktreeIdentity({ workspaceRoot: stateDir });
+    expect(refreshed.observedCommit).toBe(activeWorktree.observedCommit);
+    expect(refreshed.dirtyState).toBe(activeWorktree.dirtyState);
+    expect(refreshed.observedCommit).not.toBe("stale-publication-commit");
+
+    const after = createWorkflowAuthorizationIssuer({
+      workflowStep: 5,
+      stage: exact.stage,
+      issuerId: "step5",
+      messageType: "EXECUTED",
+      binding: refreshed,
+    });
+    expect(after.bindingDigest).toBe(before.bindingDigest);
+    expect(() => deriveActiveCanonicalBinding({
+      workspaceRoot: stateDir,
+      workspaceId: exact.workspaceId,
+      candidate: { ...exact, branch: "forged-publication-branch" },
+    })).toThrow(/canonical transport binding mismatch|active workspace worktree identity/);
+  });
+
   it("does not let a valid Step 5 checkpoint mint a caller-selected action", () => {
     const exact = binding("c2c_action_binding");
     const statePath = path.join(stateDir, ".harness", exact.workstreamId!, "state.yaml");
