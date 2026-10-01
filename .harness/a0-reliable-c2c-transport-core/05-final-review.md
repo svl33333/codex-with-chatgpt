@@ -81,3 +81,20 @@ branch). This is recorded evidence, not a claim that all 238 tests passed.
 Canonical workflow state is Step 7 / `HUMAN_WAITING`, blocked on the explicit
 merge approval Human Gate. No merge is authorized or performed by this
 artifact.
+
+## Verified Step 7 merge result
+
+The user explicitly approved the canonical Step 7 merge Human Gate for PR #7.
+GitHub then verified the guarded merge with the exact approved head
+`fd191c2944713d465574fdd8cf3d5ea3efe34124`:
+
+- PR #7: `MERGED`
+- merge method: normal merge
+- merge commit: `b36a38cdd613ef474460e2ebc4a62180a93e99c7`
+- base: `release/v0.1.3-svl.13`
+- resulting base head: `b36a38cdd613ef474460e2ebc4a62180a93e99c7`
+- remote checks: none reported
+- Issue #6: `OPEN`, retained as the live requirements authority
+
+The authoritative A0 state records `workflow.status: DONE` only after this
+remote merge result was observed.
