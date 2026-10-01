@@ -823,3 +823,12 @@ explicitly approved the Step 6 Push/PR publication Human Gate at
 authorized; merge approval is not included.
 
 PUSH_PR_PUBLICATION_AUTHORIZED
+
+The authorized publication is now recorded as commit
+`f4274745c6891a4e61d833869c001713253a556c` on the remote branch
+`a0-reliable-c2c-transport-core`, with PR [#7](https://github.com/svl33333/codex-with-chatgpt/pull/7)
+targeting `release/v0.1.3-svl.13`. No remote checks are currently reported;
+the canonical next action is Step 7 final review and no merge approval is
+implied.
+
+PR_PUBLISHED_AWAITING_FINAL_REVIEW

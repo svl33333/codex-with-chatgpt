@@ -65,3 +65,12 @@ Step 6 gate. The user then explicitly approved that gate; the next canonical
 action is commit, push, and one A0 pull-request publication, followed by Step 7
 final review. The seven `uv_os_get_passwd: ENOMEM` host-limited cases remain
 part of the publication evidence.
+
+## Publication record
+
+The approved Step 6 publication produced commit
+`f4274745c6891a4e61d833869c001713253a556c` on remote branch
+`a0-reliable-c2c-transport-core` and PR [#7](https://github.com/svl33333/codex-with-chatgpt/pull/7)
+against `release/v0.1.3-svl.13`. GitHub currently reports no checks for the
+branch. The seven host-limited `uv_os_get_passwd: ENOMEM` cases remain
+explicitly included above; they are not represented as passing tests.
