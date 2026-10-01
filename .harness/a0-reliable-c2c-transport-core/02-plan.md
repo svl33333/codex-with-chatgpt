@@ -831,4 +831,33 @@ targeting `release/v0.1.3-svl.13`. No remote checks are currently reported;
 the canonical next action is Step 7 final review and no merge approval is
 implied.
 
-PR_PUBLISHED_AWAITING_FINAL_REVIEW
+### 13.9 Step 7 final-review remediation (c2c_f427 iteration 0)
+
+The independent Step 7 final review through the exact A0 Project/chat returned
+`FIX_REQUIRED` at logical checkpoint `c2c_f427`, iteration 0. The reviewer
+identified that the active binding resolver treated the mutable
+`observedCommit` and `dirtyState` observations in `state.yaml` as immutable
+long-lived connection identity, so a later state/publication-only commit could
+invalidate an otherwise matching workspace/session reconstruction. This is an
+in-scope autonomous remediation under the pinned C2C review contract; it does
+not introduce a Human Gate or authorize merge.
+
+The remediation in commit
+`5562aeca6aa203ae8a25dccac8773028f5e4a18c` keeps workspace, repository,
+worktree, branch, installation, connector, Project/chat, Codex-session,
+workstream, checkpoint, stage, and event identity in the durable comparator and
+digest. Commit and dirty-state values remain required event-time evidence, are
+validated for shape, and are refreshed from the active worktree during
+reconstruction. A deterministic regression covers a stale state/publication
+observation, stable authority digest, refreshed current observations, and
+rejection of an immutable branch mismatch.
+
+Post-remediation validation is typecheck PASS, build PASS, focused suite
+52/52 PASS, full suite 231/238 with the same seven host-limited CLI subprocess
+cases failing at `uv_os_get_passwd: ENOMEM`, and `git diff --check` PASS. The
+seven cases remain explicit evidence and are not counted as passing tests. The
+same logical `c2c_f427` review is ready for bounded iteration-1 re-review
+through the exact A0 Project/chat; source implementation remains complete and
+merge approval remains ungranted.
+
+FINAL_REVIEW_REMEDIATION_IN_PROGRESS

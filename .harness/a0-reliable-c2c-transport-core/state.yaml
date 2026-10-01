@@ -62,7 +62,15 @@ workflow:
     65ed0ba were pushed to the canonical remote; PR #7 was created against
     release/v0.1.3-svl.13. No remote checks are currently reported. The
     canonical workflow now requests Step 7 final review; merge remains
-    prohibited.
+    prohibited. The exact A0 final review at c2c_f427 iteration 0 returned
+    FIX_REQUIRED because mutable commit/dirty observations were treated as
+    long-lived binding identity. The canonical autonomous remediation in
+    5562aeca6aa203ae8a25dccac8773028f5e4a18c separates immutable binding
+    identity from event-time evidence, refreshes current observations during
+    reconstruction, and adds deterministic regression coverage. Typecheck and
+    build pass, the focused suite is 52/52, and the full suite is 231/238
+    with seven explicit uv_os_get_passwd: ENOMEM host-limited CLI cases. The
+    same logical checkpoint is queued for bounded iteration-1 re-review.
   prior_step4_approval:
     route: direct
     artifact: 02-plan.md
@@ -133,13 +141,13 @@ pr:
   base_branch: release/v0.1.3-svl.13
   base_head: 13d13f0a05bfaa102394de7145607241d9da1c48
   head_branch: a0-reliable-c2c-transport-core
-  head_sha: 65ed0ba33eb29ce4f1c90671469775011c27ea55
+  head_sha: 5562aeca6aa203ae8a25dccac8773028f5e4a18c
   checks_status: NO_CHECKS_REPORTED
 plan:
   artifact: .harness/a0-reliable-c2c-transport-core/02-plan.md
   identity: a0-reliable-c2c-transport-core-q311-amended
   amendment: Q311 / A0-AC-024..027
-  status: PR_PUBLISHED_AWAITING_FINAL_REVIEW
+  status: FINAL_REVIEW_REMEDIATION_IN_PROGRESS
   source_implementation: complete_locally
 git:
   branch: a0-reliable-c2c-transport-core
@@ -149,7 +157,7 @@ git:
   remote_status: PUBLISHED
   remote_url: https://github.com/svl33333/codex-with-chatgpt.git
   remote_branch: a0-reliable-c2c-transport-core
-  remote_head: 65ed0ba33eb29ce4f1c90671469775011c27ea55
+  remote_head: 5562aeca6aa203ae8a25dccac8773028f5e4a18c
   remote_checks: no checks reported
 artifacts:
   - CONTEXT.md
@@ -174,7 +182,7 @@ c2c:
   review_stage: final
   verdict: null
   cycle: 0
-  attempt_iteration: 0
+  attempt_iteration: 1
   last_action: REVIEW
   human_action_queue: []
   last_review_verdict: PASS
@@ -197,14 +205,14 @@ c2c:
     only workflow consequences. The plan now defines operation-specific remote
     evidence and tests for Issue, push, PR, review, and publication exactly-once
     reconciliation, including ambiguous and same-key/different-payload cases.
-  review_retry_ready: false
-  current_review_started_at: "2026-10-01T11:20:00Z"
-  current_attempt_prior_verdict: null
-  current_attempt_prior_iteration: null
+  review_retry_ready: true
+  current_review_started_at: "2026-10-01T11:35:59Z"
+  current_attempt_prior_verdict: FIX_REQUIRED
+  current_attempt_prior_iteration: 0
   current_attempt_verdict: null
   current_review_completed_at: null
   current_review_checkpoint: c2c_f427
-  current_review_iteration: 0
+  current_review_iteration: 1
   current_review_stage: final
   current_remediation_applied_at: "2026-10-01T10:23:37Z"
   current_remediation_scope: source_and_tests
@@ -228,7 +236,13 @@ c2c:
     from the harness, rejects caller-selected Step 5 actions, requires exact
     repository proof for push and authoritative absence, and adds live-owner,
     competing-process, and provenance regression coverage. No Issue #6,
-    credentials, or unrelated workstreams were changed.
+    credentials, or unrelated workstreams were changed. Step 7 final-review
+    iteration 0 then found that mutable observed commit and dirty-state
+    evidence was incorrectly part of long-lived binding identity. Commit
+    5562aeca6aa203ae8a25dccac8773028f5e4a18c removes those mutable
+    observations from the durable comparator and digest, validates them as
+    event-time evidence, refreshes them from the active worktree, and adds a
+    deterministic publication-only state-change regression.
   current_attempt_history:
     - iteration: 0
       verdict: FIX_REQUIRED
@@ -265,9 +279,23 @@ c2c:
         reconciliation, visible-bubble and response-consumption guards,
         compaction/session reconstruction, runtime transaction wiring, and
         preservation of security and unrelated-workstream boundaries.
+  final_review_history:
+    - iteration: 0
+      verdict: FIX_REQUIRED
+      checkpoint: c2c_f427
+      review_stage: final
+      summary: >-
+        Exact A0 review found that observedCommit and dirtyState from
+        state.yaml were treated as immutable long-lived binding identity. A
+        later state/publication-only commit could therefore invalidate an
+        otherwise matching workspace/session reconstruction. The required
+        remediation was limited to separating immutable identity from
+        event-time evidence, refreshing current observations, and adding a
+        deterministic regression.
   current_review_intent: >-
-    Step 7 final review is pending through the exact A0 Project/chat for
-    remote PR #7, after the post-implementation c2c_bc5c iteration-4 PASS.
+    Step 7 final review iteration 0 returned FIX_REQUIRED through the exact A0
+    Project/chat. The source/test remediation is complete and the same logical
+    c2c_f427 checkpoint is queued for iteration-1 re-review against PR #7.
   prior_attempt_capability_failure: >-
     Exact A0 MCP workspace_info and read_file calls returned internal errors;
     the reviewer did not substitute another connector or local evidence.
@@ -321,7 +349,9 @@ implementation:
   remediation_scope: source_and_tests
   commit_push_pr_publication: authorized_after_step6_approval
   review_completed_at: "2026-10-01T10:30:01.1909022Z"
-  next_review_stage: final_review
+  next_review_stage: final_review_re_review
+  final_review_iteration_0_verdict: FIX_REQUIRED
+  final_review_remediation_commit: 5562aeca6aa203ae8a25dccac8773028f5e4a18c
 runner_preflight:
   status: READY
   current_status: WORKSPACE_INFO_VERIFIED
@@ -360,7 +390,7 @@ runner_preflight:
   verified_workspace_id: f5dc2ee0d7ba
   verified_workspace_name: codex-with-chatgpt-a0-reliable-c2c-transport-core
   verified_branch: a0-reliable-c2c-transport-core
-  verified_commit: c0bf843
+  verified_commit: 5562aeca6aa203ae8a25dccac8773028f5e4a18c
   workspace_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
   canonical_repository: https://github.com/svl33333/codex-with-chatgpt
   worktree_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a0-reliable-c2c-transport-core
@@ -393,7 +423,7 @@ runner_preflight:
     runner preflight, not a canonical Human Gate. One broken workspace binding
     must not block unrelated workstreams.
 next:
-  action: complete the independent Step 7 final C2C review and Codex final-diff validation; then present the merge Human Gate if PASS
+  action: complete the bounded c2c_f427 Step 7 final C2C iteration-1 re-review and Codex final-diff validation; then present the merge Human Gate if PASS
   blocked_on: null
   historical_next_action: await Step 4 direct plan approval
 execution_policy:
@@ -401,4 +431,4 @@ execution_policy:
   actual: "app-configured GPT-6"
   compliance: "unavailable in this session"
   human_gate_due_to_model_limitation: false
-updated_at: "2026-10-01T11:20:00Z"
+updated_at: "2026-10-01T11:35:59Z"
