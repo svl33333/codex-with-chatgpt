@@ -65,6 +65,28 @@ Partial, multiply delivered, ambiguous, or otherwise non-atomic transport of
 one logical event; it is recorded separately from review correctness.
 _Avoid_: a reason to send a continuation fragment
 
+**Delegation grant**:
+A durable, versioned, least-authority predicate for one closed action class.
+It records exact scope, grant-specific approval provenance, a time window, and
+a finite-use budget. A grant is not an A0 delivery authority and cannot
+approve a Human Gate.
+
+**Delegation reservation**:
+A grant-scoped durable `RESERVED → CONSUMED` or `RESERVED → RELEASED`
+transaction. Transport commits at persisted A0 authority; local reads and
+known-operation reconciliation commit at their durable proof/result boundary.
+
+**Decision proof**:
+A bounded serializable allow/deny record containing digests, expiry, and typed
+reasons. It is evidence for a later consumer, never an authority token or a
+substitute for the canonical A0 issuer.
+
+**Action-specific provider evidence**:
+TeamAI `github-cli-auth` account/capability evidence is required only when the
+classified operation path depends on it. `workspace_read`, current
+provider-free `c2c_transport`, and local persisted-evidence reconciliation do
+not resolve or require GitHub authentication.
+
 ## Boundaries
 
 **Rehydration**:

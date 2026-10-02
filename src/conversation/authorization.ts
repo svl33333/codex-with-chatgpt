@@ -2,10 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { getStateDir, readJsonIfExists, writeAtomicSecureJson } from "../config/paths.js";
+import { withLease } from "../config/lease.js";
+import { readStrictJsonFile } from "../config/strict-json.js";
 import { readWorktreeIdentity } from "../connection/identity.js";
 import {
   prepareGitHubOperation,
   reconcileGitHubOperation,
+  operationTargetsMatch,
   type GitHubOperationObservation,
   type GitHubOperationTarget,
 } from "./operation.js";
@@ -95,6 +98,16 @@ export interface C2cDeliveryAuthorization {
   binding: TransportBindingIdentity;
   expiresAt?: string;
   revokedAt?: string;
+  /** Optional A1 evidence; it never replaces this A0 authority. */
+  delegation?: DelegationReference;
+}
+
+export interface DelegationReference {
+  grantId: string;
+  grantGeneration: number;
+  reservationId: string;
+  decisionDigest: string;
+  auditReference?: string;
 }
 
 export interface ReceiptHistoryEntry {
@@ -159,6 +172,7 @@ export interface C2cDeliveryReceipt {
   history: ReceiptHistoryEntry[];
   createdAt: string;
   updatedAt: string;
+  delegation?: DelegationReference;
 }
 
 export interface AuthRecoveryObservation {
@@ -221,6 +235,7 @@ export interface IssueAuthorizationInput {
   binding: TransportBindingIdentity;
   operationTarget?: GitHubOperationTarget;
   expiresAt?: string;
+  delegation?: DelegationReference;
 }
 
 export interface PrepareDeliveryInput {
@@ -406,50 +421,21 @@ function assertEventIdentity(
 }
 
 function withEventLease<T>(eventKey: string, action: () => T): T {
-  const file = lockFile(eventKey);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  let descriptor: number | null = null;
-  let acquired = false;
-  const leaseId = randomUUID();
   try {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        descriptor = fs.openSync(file, "wx", 0o600);
-        acquired = true;
-        fs.writeFileSync(descriptor, JSON.stringify({ leaseId, pid: process.pid, at: now() }), "utf8");
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        try {
-          const age = Date.now() - fs.statSync(file).mtimeMs;
-          if (age > MAX_LOCK_AGE_MS) fs.rmSync(file, { force: true });
-        } catch {
-          // A concurrent owner may have released the lease.
-        }
-      }
-    }
-    if (descriptor === null) throw new Error("transport event is locked");
-    return action();
-  } finally {
-    if (descriptor !== null) {
-      try {
-        fs.closeSync(descriptor);
-      } catch {
-        // The descriptor may already be closed after an I/O failure.
-      }
-    }
-    if (acquired) {
-      try {
-        const current = JSON.parse(fs.readFileSync(file, "utf8")) as { leaseId?: string };
-        if (current.leaseId === leaseId) fs.rmSync(file, { force: true });
-      } catch {
-        // Best effort lease cleanup; the stale lease guard and CAS handle recovery.
-      }
-    }
+    return withLease(lockFile(eventKey), action, { staleAfterMs: MAX_LOCK_AGE_MS, legacyAt: true });
+  } catch (error) {
+    if (error instanceof Error && error.message === "lease is locked") throw new Error("transport event is locked");
+    throw error;
   }
 }
 
+/** Run a coordinator callback while the canonical event lease is already owned. */
+export function withOwnedEventLease<T>(eventKey: string, action: () => T): T {
+  return withEventLease(eventKey, action);
+}
+
 function saveAuthorization(authorization: C2cDeliveryAuthorization): C2cDeliveryAuthorization {
+  if (authorization.delegation !== undefined && !validDelegationReference(authorization.delegation)) throw new Error("invalid delegation reference");
   const file = stateFile("authorizations", authorization.eventKey);
   const existing = fs.existsSync(file) ? loadAuthorization(authorization.eventKey) : null;
   const generation = Number.isSafeInteger(authorization.generation) && authorization.generation >= 0 ? authorization.generation : 0;
@@ -459,6 +445,17 @@ function saveAuthorization(authorization: C2cDeliveryAuthorization): C2cDelivery
   return next;
 }
 
+function validDelegationReference(value: unknown): value is DelegationReference {
+  if (!value || typeof value !== "object") return false;
+  const reference = value as Partial<DelegationReference>;
+  const generation = reference.grantGeneration;
+  return typeof reference.grantId === "string" && reference.grantId.length > 0 &&
+    Number.isSafeInteger(generation) && generation !== undefined && generation >= 0 &&
+    typeof reference.reservationId === "string" && reference.reservationId.length > 0 &&
+    typeof reference.decisionDigest === "string" && /^[a-f0-9]{64}$/i.test(reference.decisionDigest) &&
+    (reference.auditReference === undefined || typeof reference.auditReference === "string");
+}
+
 function loadAuthorization(eventKey: string): C2cDeliveryAuthorization | null {
   const file = stateFile("authorizations", eventKey);
   if (!fs.existsSync(file)) return null;
@@ -466,11 +463,13 @@ function loadAuthorization(eventKey: string): C2cDeliveryAuthorization | null {
   if (!value || value.schemaVersion !== 1 || value.eventKey !== eventKey || value.issuer !== "canonical-workflow") {
     throw new Error("malformed delivery authorization record; refusing implicit recovery");
   }
+  if (value.delegation !== undefined && !validDelegationReference(value.delegation)) throw new Error("malformed delegation reference; refusing implicit recovery");
   const generation = Number.isSafeInteger(value.generation) && value.generation >= 0 ? value.generation : 0;
   return { ...value, generation };
 }
 
 function saveReceipt(receipt: C2cDeliveryReceipt): C2cDeliveryReceipt {
+  if (receipt.delegation !== undefined && !validDelegationReference(receipt.delegation)) throw new Error("invalid delegation reference");
   const bounded = {
     ...receipt,
     generation: Number.isSafeInteger(receipt.generation) && receipt.generation >= 0 ? receipt.generation : 0,
@@ -493,6 +492,7 @@ function loadReceipt(eventKey: string): C2cDeliveryReceipt | null {
   if (!value || value.schemaVersion !== 1 || value.eventKey !== eventKey) {
     throw new Error("malformed delivery receipt record; refusing implicit recovery");
   }
+  if (value.delegation !== undefined && !validDelegationReference(value.delegation)) throw new Error("malformed delegation reference; refusing implicit recovery");
   const generation = Number.isSafeInteger(value.generation) && value.generation >= 0 ? value.generation : 0;
   return { ...value, generation };
 }
@@ -738,7 +738,7 @@ function assertCanonicalBindingAgainstSnapshot(binding: TransportBindingIdentity
   }
 }
 
-function assertActiveCanonicalBinding(binding: TransportBindingIdentity): void {
+export function assertActiveCanonicalBinding(binding: TransportBindingIdentity): void {
   if (binding[ACTIVE_CANONICAL_BINDING] !== true) {
     throw new Error("transport binding must come from the active canonical workflow resolver");
   }
@@ -901,8 +901,7 @@ function verifyWorkflowAuthorizationIssuer(issuer: WorkflowAuthorizationIssuer, 
   }
 }
 
-/** Issue one event-scoped authority from the canonical workflow issuer only. */
-export function issueDeliveryAuthorization(input: IssueAuthorizationInput): C2cDeliveryAuthorization {
+function validateIssueAuthorizationInput(input: IssueAuthorizationInput): void {
   assertMessageType(input.messageType);
   verifyWorkflowAuthorizationIssuer(input.issuer, input.binding, input.sourceCheckpoint);
   if (input.messageType !== input.issuer.authorizedMessageType) {
@@ -926,38 +925,49 @@ export function issueDeliveryAuthorization(input: IssueAuthorizationInput): C2cD
       throw new Error("GitHub operation repository is not bound to the canonical workspace");
     }
   }
-  return withEventLease(input.eventKey, () => {
-    const operation = input.operationTarget ? prepareGitHubOperation(input.operationTarget, input.payloadHash) : undefined;
-    const existing = loadAuthorization(input.eventKey);
-    if (existing) {
-      if (
-        existing.payloadHash !== input.payloadHash ||
-        existing.messageType !== input.messageType ||
-        !bindingMatches(existing.binding, input.binding) ||
-        existing.operationKey !== operation?.operationKey
-      ) {
-        throw new Error("logical event already has a different authorization");
-      }
-      return existing;
+}
+
+/** Issue/reuse an event authority while the caller already owns its lease. */
+export function issueOrReuseDeliveryAuthorizationOwnedLease(input: IssueAuthorizationInput): C2cDeliveryAuthorization {
+  validateIssueAuthorizationInput(input);
+  const operation = input.operationTarget ? prepareGitHubOperation(input.operationTarget, input.payloadHash) : undefined;
+  const existing = loadAuthorization(input.eventKey);
+  if (existing) {
+    if (
+      existing.payloadHash !== input.payloadHash ||
+      existing.messageType !== input.messageType ||
+      !bindingMatches(existing.binding, input.binding) ||
+      existing.operationKey !== operation?.operationKey ||
+      (input.delegation !== undefined && JSON.stringify(existing.delegation) !== JSON.stringify(input.delegation))
+    ) {
+      throw new Error("logical event already has a different authorization");
     }
-    const authorization: C2cDeliveryAuthorization = {
-      schemaVersion: 1,
-      generation: 0,
-      authorityId: randomUUID(),
-      issuedAt: now(),
-      issuer: "canonical-workflow",
-      issuerId: boundedText(input.issuer.issuerId, 128) ?? "canonical-workflow",
-      sourceCheckpoint: input.sourceCheckpoint,
-      sourceStage: input.sourceStage,
-      messageType: input.messageType,
-      eventKey: input.eventKey,
-      payloadHash: input.payloadHash,
-      binding: boundedBinding(input.binding),
-      ...(operation ? { operationKey: operation.operationKey, operationTarget: operation.target } : {}),
-      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
-    };
-    return saveAuthorization(authorization);
-  });
+    return existing;
+  }
+  const authorization: C2cDeliveryAuthorization = {
+    schemaVersion: 1,
+    generation: 0,
+    authorityId: randomUUID(),
+    issuedAt: now(),
+    issuer: "canonical-workflow",
+    issuerId: boundedText(input.issuer.issuerId, 128) ?? "canonical-workflow",
+    sourceCheckpoint: input.sourceCheckpoint,
+    sourceStage: input.sourceStage,
+    messageType: input.messageType,
+    eventKey: input.eventKey,
+    payloadHash: input.payloadHash,
+    binding: boundedBinding(input.binding),
+    ...(operation ? { operationKey: operation.operationKey, operationTarget: operation.target } : {}),
+    ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    ...(input.delegation ? { delegation: input.delegation } : {}),
+  };
+  return saveAuthorization(authorization);
+}
+
+/** Issue one event-scoped authority from the canonical workflow issuer only. */
+export function issueDeliveryAuthorization(input: IssueAuthorizationInput): C2cDeliveryAuthorization {
+  validateIssueAuthorizationInput(input);
+  return withEventLease(input.eventKey, () => issueOrReuseDeliveryAuthorizationOwnedLease(input));
 }
 
 /** Record only a bounded classification returned by TeamAI; A0 never derives it from error text. */
@@ -1014,17 +1024,26 @@ export function revokeDeliveryAuthorization(authorization: C2cDeliveryAuthorizat
 export function prepareAuthorizedDelivery(input: PrepareDeliveryInput): C2cDeliveryReceipt {
   assertMessageType(input.messageType);
   assertEventIdentity(input.authorization, input.binding, input.messageType, input.eventKey, input.payloadHash);
-  return withEventLease(input.eventKey, () => {
-    const existing = loadReceipt(input.eventKey);
-    if (existing) {
-      if (existing.authorityId !== input.authorization.authorityId || existing.payloadHash !== input.payloadHash) {
-        throw new Error("delivery receipt identity mismatch");
-      }
-      assertBinding(existing.binding, input.binding);
-      return existing;
+  return withEventLease(input.eventKey, () => prepareAuthorizedDeliveryOwnedLease(input));
+}
+
+/** Prepare/reuse the receipt while the caller already owns the event lease. */
+export function prepareAuthorizedDeliveryOwnedLease(input: PrepareDeliveryInput): C2cDeliveryReceipt {
+  assertMessageType(input.messageType);
+  assertEventIdentity(input.authorization, input.binding, input.messageType, input.eventKey, input.payloadHash);
+  const existing = loadReceipt(input.eventKey);
+  if (existing) {
+    if (existing.authorityId !== input.authorization.authorityId || existing.payloadHash !== input.payloadHash) {
+      throw new Error("delivery receipt identity mismatch");
     }
-    const timestamp = now();
-    const receipt: C2cDeliveryReceipt = {
+    if (input.authorization.delegation && JSON.stringify(existing.delegation) !== JSON.stringify(input.authorization.delegation)) {
+      throw new Error("delivery receipt delegation identity mismatch");
+    }
+    assertBinding(existing.binding, input.binding);
+    return existing;
+  }
+  const timestamp = now();
+  const receipt: C2cDeliveryReceipt = {
       schemaVersion: 1,
       generation: 0,
       authorityId: input.authorization.authorityId,
@@ -1034,6 +1053,7 @@ export function prepareAuthorizedDelivery(input: PrepareDeliveryInput): C2cDeliv
       binding: boundedBinding(input.binding),
       ...(input.authorization.operationKey ? { operationKey: input.authorization.operationKey } : {}),
       ...(input.authorization.operationTarget ? { operationTarget: input.authorization.operationTarget } : {}),
+      ...(input.authorization.delegation ? { delegation: input.authorization.delegation } : {}),
       state: "PREPARED",
       sendAttempts: 0,
       ...(input.processId ? { processId: boundedText(input.processId, 128) } : {}),
@@ -1053,13 +1073,44 @@ export function prepareAuthorizedDelivery(input: PrepareDeliveryInput): C2cDeliv
       history: [{ state: "PREPARED", at: timestamp }],
       createdAt: timestamp,
       updatedAt: timestamp,
-    };
-    return saveReceipt(receipt);
-  });
+  };
+  return saveReceipt(receipt);
 }
 
 export function readDeliveryReceipt(eventKey: string): C2cDeliveryReceipt | null {
   return loadReceipt(eventKey);
+}
+
+/** Read-only lookup used by A1 reconciliation; never creates or mutates a receipt. */
+export function readDeliveryReceiptForOperation(operationKey: string, expectedTarget?: GitHubOperationTarget, expectedPayloadHash?: string): C2cDeliveryReceipt | null {
+  const directory = path.join(transportRoot(), "receipts");
+  if (!fs.existsSync(directory)) return null;
+  const candidates: C2cDeliveryReceipt[] = [];
+  for (const entry of fs.readdirSync(directory)) {
+    if (!entry.endsWith(".json")) continue;
+    const candidateFile = path.join(directory, entry);
+    const parsed = readStrictJsonFile<C2cDeliveryReceipt>(candidateFile);
+    if (parsed.status !== "OK" || !parsed.value) continue;
+    const value = parsed.value;
+    if (value.schemaVersion !== 1 || value.operationKey !== operationKey || !value.operationTarget) continue;
+    const canonicalFile = path.resolve(stateFile("receipts", value.eventKey));
+    const candidatePath = path.resolve(candidateFile);
+    const samePath = process.platform === "win32"
+      ? canonicalFile.toLowerCase() === candidatePath.toLowerCase()
+      : canonicalFile === candidatePath;
+    if (!samePath) continue;
+    let canonical: C2cDeliveryReceipt | null;
+    try { canonical = loadReceipt(value.eventKey); } catch { continue; }
+    if (!canonical || canonical.generation !== value.generation || canonical.updatedAt !== value.updatedAt || canonical.authorityId !== value.authorityId || canonical.payloadHash !== value.payloadHash || canonical.operationKey !== value.operationKey || JSON.stringify(canonical.operationTarget) !== JSON.stringify(value.operationTarget) || JSON.stringify(canonical.operationEvidence) !== JSON.stringify(value.operationEvidence)) continue;
+    const authority = loadAuthorization(value.eventKey);
+    if (!authority || authority.authorityId !== value.authorityId || authority.operationKey !== operationKey || !authority.operationTarget || !operationTargetsMatch(authority.operationTarget, value.operationTarget)) continue;
+    if (!operationTargetsMatch(value.operationTarget, expectedTarget ?? value.operationTarget)) continue;
+    if (expectedPayloadHash !== undefined && (value.payloadHash !== expectedPayloadHash || authority.payloadHash !== expectedPayloadHash)) continue;
+    if (!value.operationEvidence) continue;
+    candidates.push(value);
+  }
+  if (candidates.length > 1) throw new Error("multiple conflicting A0 receipts match the known operation");
+  return candidates[0] ?? null;
 }
 
 export function markSending(

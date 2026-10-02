@@ -1,0 +1,157 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.3.1
+  spec_commit: 60d17218c256098522e063b5bf4731cecc9c1f12
+  review_contract: schema/c2c-review-contract.json
+  resolver_validation_status: WORKFLOW_READY
+  direct_validator_status: passed
+  step: 6
+  stage: PR / Push Waiting
+  status: PUSH_WAITING
+  last_completed_action: >-
+    Step 3 completed after Q401-Q414 approval and Issue #8 conversion by
+    reading the live Issue evidence, current A0 source, CONTEXT, and tests.
+    Baseline typecheck passed; the full test run had 231 passed and 7 host
+    ENOMEM child-process failures. The exact isolated A1 Project/chat/connector
+    binding and workspace_info verification succeeded. C2C checkpoint c2c_2e0a
+     completed six pre-implementation iterations (0 through 5):
+     iterations 0, 1, 3, and 4 were FIX_REQUIRED and all findings were
+     remediated in the plan only; iterations 2 and 5 returned terminal PASS for
+     their reviewed artifacts. The Step 3 plan-review work remained plan-only;
+     source implementation was not authorized by that stage. Step 4 redline
+     feedback identified a substantive
+    action-specific provider/security predicate inconsistency and required
+    updates to the proof/scope wording, trust-boundary rule, affected module
+    descriptions, and regression coverage. The approved action vocabulary,
+    exclusions, grant lifetime/use policy, Human Gate boundaries, and A0
+     semantics remain unchanged. Iteration 3 returned FIX_REQUIRED for three
+     localized provider-boundary contract/test gaps; iteration 4 then found two
+      further boundary inconsistencies. The plan-only remediation is complete;
+      iteration 5 returned terminal PASS. The Step 4 Direct plan-approval
+     Human Gate was explicitly approved at 2026-10-02T12:37:51+09:00. The
+     remaining Step 4 redline was
+     reconciled in the final plan without changing Q401-Q414, the approved
+     architecture, action vocabulary, exclusions, grant lifetime/use policy,
+     Human Gate boundaries, or A0 semantics. Canonical Step 4 handling returns
+     the amended plan to the same Direct plan-approval Human Gate; no new C2C
+     review was required for this non-semantic reconciliation. Step 5
+      implementation and post-implementation C2C review completed within the
+      approved plan and Q401-Q414 scope. The exact A1 reviewer returned
+      terminal PASS at c2c_a1_step5 iteration 9 after verifying the iteration-8
+      canonical-binding-brand remediation and all prior boundaries. Typecheck,
+      build, targeted validation, and diff-check passed; the seven known host
+      uv_os_get_passwd ENOMEM subprocess limitations remain documented. No
+      commit, push, PR, or other external write was performed. The canonical
+      next step is the Step 6 Push/PR publication Human Gate.
+  requirements:
+    artifact: .harness/a1-delegated-authorization/00-requirements-working.md
+    status: APPROVED
+    resolved_qids: Q401-Q414
+    open_qids: []
+    pending_qids: []
+    no_new_qid_required: true
+    approved_at: "2026-10-02T00:50:08+09:00"
+    approval_source: explicit user answers and approval in the A1 task instruction
+    terminal_marker: REQUIREMENTS_READY_FOR_APPROVAL
+  issue_conversion:
+    status: COMPLETE
+    attempted_at: "2026-10-02T00:50:08+09:00"
+    completed_at: "2026-10-02T01:03:02+09:00"
+    auth_preflight: credential_context_failure_cli_browser_verified
+    account: svl33333
+    existing_issue_reconciled: true
+    issue_created: true
+    issue_number: 8
+    issue_url: https://github.com/svl33333/codex-with-chatgpt/issues/8
+    browser_used: true
+    conversion: pure_requirements_to_issue
+    next_action: proceed to the Step 4 Direct plan-approval Human Gate after terminal C2C PASS
+  auth_recovery:
+    status: COMPLETE
+    attempt: 1
+    mode: web_device
+    browser_used: true
+    origin: https://github.com
+    device_flow_path: /login/device
+    account: svl33333
+    current_surface: device_authorized
+    email_verification: not_required
+    credential_context: cli_hosts_yml_access_denied_browser_verified
+    final_account_status: verified_svl33333
+    next_human_action: null
+  runner_preflight:
+    status: RUNTIME_READY
+    local_runtime_ready: true
+    local_doctor: passed
+    local_provisioning_phase: authenticated
+    workspace_id: bc29499cac43
+    workspace_name: codex-with-chatgpt-a1-delegated-authorization
+    expected_connector_name: "Codex with ChatGPT · codex-with-chatgpt-a1-delegated-auth · 2aa24f13"
+    mcp_binding_ready: true
+    review_session_ready: true
+    workspace_ready: true
+    connector_form_status: created_and_authorized
+    project_binding: bound
+    project_url: https://chatgpt.com/g/g-p-6abe8a9125b4819185ef2dd6ffba5628/project
+    chat_binding: bound
+    chat_url: https://chatgpt.com/g/g-p-6abe8a9125b4819185ef2dd6ffba5628-codex-with-chatgpt-a1-delegated-authorization/c/6abe8bae-ec9c-83ee-af80-f087b9e18354
+    workspace_info_verified: true
+    workspace_info_observed_head: b36a38cdd613ef474460e2ebc4a62180a93e99c7
+    bootstrap_blocker: null
+  plan:
+    draft_artifact: .harness/a1-delegated-authorization/02-plan-draft.md
+    status: FINAL
+    c2c_required: true
+    final_artifact: .harness/a1-delegated-authorization/02-plan.md
+    draft_sha256: E02D1D9276399A27660AA0E310687A1A838C30E7819AF6B6691A8E32A89EFBE9
+    reviewed_draft_sha256: E02D1D9276399A27660AA0E310687A1A838C30E7819AF6B6691A8E32A89EFBE9
+    final_sha256: 55E96886FBF6685855D6347AFC03C285F9E0289794B63B9DCC25EEF38959148A
+  step4_approval:
+    route: direct
+    artifact: 02-plan.md
+    approved: true
+    approved_at: "2026-10-02T12:37:51+09:00"
+  delegation_approvals: []
+issue:
+  number: 8
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/8
+git:
+  branch: a1-delegated-authorization
+  source_branch: release/v0.1.3-svl.13
+  base_branch: release/v0.1.3-svl.13
+  base_head: b36a38cdd613ef474460e2ebc4a62180a93e99c7
+  head: b36a38cdd613ef474460e2ebc4a62180a93e99c7
+  dirty: true
+  uncommitted_scope_note: >-
+    The worktree contains the approved-scope A1 implementation and test
+    changes. Step 5 C2C iteration-8 remediation additionally made A1 require
+    the shared runtime-only canonical-binding brand; no external write or
+    scope expansion was made.
+  remote_url: https://github.com/svl33333/codex-with-chatgpt.git
+  remote_branch: a1-delegated-authorization
+  remote_status: NOT_PUBLISHED
+  worktree_root: C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a1-delegated-authorization
+artifacts:
+  - .harness/a1-delegated-authorization/00-workflow-resolution.md
+  - .harness/a1-delegated-authorization/00-workspace-preflight.md
+  - .harness/a1-delegated-authorization/00-requirements-working.md
+  - .harness/a1-delegated-authorization/01-issue-snapshot.md
+  - .harness/a1-delegated-authorization/02-plan-draft.md
+  - .harness/a1-delegated-authorization/02-plan.md
+  - .harness/a1-delegated-authorization/04-test-summary.md
+  - .harness/a1-delegated-authorization/04-implementation-log.md
+  - .harness/a1-delegated-authorization/state.yaml
+c2c:
+  checkpoint: c2c_a1_step5
+  review_stage: post_implementation
+  verdict: PASS
+  cycle: 9
+  last_action: PROCEED
+  prior_terminal_verdict: PASS
+  human_action_queue: []
+next:
+  action: request explicit human push/PR publication approval
+  blocked_on: explicit human push/PR approval
+updated_at: "2026-10-02T13:20:21+09:00"

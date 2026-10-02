@@ -75,6 +75,8 @@ export interface GitHubOperationRecord {
   operationKey: string;
   target: GitHubOperationTarget;
   payloadHash: string;
+  /** Policy-owned discriminator used only by A1 reconciliation. */
+  reconciliationPath?: "local_persisted" | "provider_bound";
   /** Monotonic record generation checked while holding the operation lease. */
   generation: number;
   createdAt: string;
@@ -339,4 +341,16 @@ export function prepareGitHubOperation(target: GitHubOperationTarget, payloadHas
 
 export function readGitHubOperation(operationKeyValue: string): GitHubOperationRecord | null {
   return readJsonIfExists<GitHubOperationRecord>(operationFile(operationKeyValue));
+}
+
+/**
+ * Read-only projection for the A1 known-operation route.  It deliberately
+ * aliases the existing persisted lookup and never creates or mutates an
+ * operation record.
+ */
+export function readKnownLogicalOperation(operationKeyValue: string): GitHubOperationRecord | null {
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(operationKeyValue)) return null;
+  const record = readGitHubOperation(operationKeyValue);
+  if (!record || record.schemaVersion !== 1 || record.operationKey !== operationKeyValue || operationKey(record.target) !== operationKeyValue || typeof record.payloadHash !== "string" || !record.payloadHash || !Number.isSafeInteger(record.generation) || record.generation < 0) return null;
+  return record;
 }
