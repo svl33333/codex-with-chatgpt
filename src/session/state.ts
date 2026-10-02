@@ -18,6 +18,16 @@ export type ProtocolState =
 
 export type WaitingFor = "none" | "GPT_PLAN" | "GPT_REVIEW" | "USER";
 
+export interface DelegationSessionProjection {
+  grantId?: string;
+  grantGeneration?: number;
+  scopeDigest?: string;
+  decisionDigest?: string;
+  reservationId?: string;
+  reservationState?: "RESERVED" | "CONSUMED" | "RELEASED";
+  denial?: string;
+}
+
 /** Bounded, non-secret projection needed to reconstruct a C2C transport. */
 export interface TransportSessionProjection {
   workspaceId?: string;
@@ -39,6 +49,7 @@ export interface TransportSessionProjection {
   payloadHash?: string;
   operationKey?: string;
   operationTarget?: GitHubOperationTarget;
+  delegation?: DelegationSessionProjection;
 }
 
 export const PROTOCOL_STATES: readonly ProtocolState[] = [
@@ -260,6 +271,18 @@ function capTransportProjection(value: TransportSessionProjection | undefined): 
   }
   const operationTarget = capOperationTarget(value.operationTarget);
   if (operationTarget) result.operationTarget = operationTarget;
+  if (value.delegation) {
+    const delegation: DelegationSessionProjection = {};
+    if (typeof value.delegation.grantId === "string") delegation.grantId = capCheckpointText(value.delegation.grantId, 128);
+    const grantGeneration = value.delegation.grantGeneration;
+    if (Number.isSafeInteger(grantGeneration) && grantGeneration !== undefined && grantGeneration >= 0) delegation.grantGeneration = grantGeneration;
+    if (typeof value.delegation.scopeDigest === "string") delegation.scopeDigest = capCheckpointText(value.delegation.scopeDigest, 128);
+    if (typeof value.delegation.decisionDigest === "string") delegation.decisionDigest = capCheckpointText(value.delegation.decisionDigest, 128);
+    if (typeof value.delegation.reservationId === "string") delegation.reservationId = capCheckpointText(value.delegation.reservationId, 128);
+    if (value.delegation.reservationState === "RESERVED" || value.delegation.reservationState === "CONSUMED" || value.delegation.reservationState === "RELEASED") delegation.reservationState = value.delegation.reservationState;
+    if (typeof value.delegation.denial === "string") delegation.denial = capCheckpointText(value.delegation.denial, 64);
+    if (Object.keys(delegation).length) result.delegation = delegation;
+  }
   return Object.keys(result).length ? result : undefined;
 }
 

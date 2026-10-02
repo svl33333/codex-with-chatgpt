@@ -60,6 +60,27 @@ usable bearer tokens.
 than OS-keychain-based. Raw tokens are never written anywhere. Keychain
 integration is a V2 item.
 
+## Delegated authorization
+
+A1 delegation grants are separate owner-only records under the machine state
+directory. They contain bounded identifiers and SHA-256 digests, never control
+message text, credentials, tokens, or endpoint material. Strict raw JSON
+parsing rejects duplicate keys and malformed records before ordinary object
+construction; unsupported records fail closed and remain available for
+diagnosis.
+
+The policy classifier derives the route from a closed action vocabulary. A
+caller cannot bypass delegation by omitting or setting a `delegationRequired`
+flag. `workspace_read` is local and bounded: it does not authenticate to
+GitHub or invoke the TeamAI `github-cli-auth` resolver. Provider evidence is
+required only for a known persisted operation whose policy-owned reconciliation
+path is explicitly provider-bound. Transport still requires the canonical A0
+issuer, binding, receipt, visible-evidence, and no-blind-resend checks.
+
+Grant leases are owner-checked and injectable-clock driven. A stale lock is
+reclaimed only when its recorded process is dead; age alone never reclaims a
+live owner. Exact grant expiry is `notBefore <= now < expiresAt`.
+
 ## What ChatGPT can never do (V1)
 
 Write files, delete files, run shell commands, commit, install packages —

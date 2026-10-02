@@ -13,6 +13,7 @@ import {
 import { recordTeamAiAuthObservation, type TeamAiAuthObservationInput } from "./authorization.js";
 import { operationTargetsMatch, type GitHubOperationObservation, type GitHubOperationTarget } from "./operation.js";
 import type { IabAdapter } from "./iab-adapter.js";
+import { assertDelegatedTransportPermit, type DelegatedTransportPermit } from "./delegation.js";
 
 export type DeliveryState = "prepared" | "sending" | "confirmed" | "ambiguous";
 export type RemoteMessageState = "accepted" | "pending" | "reasoning" | "in_progress" | "missing" | "failed" | "unknown";
@@ -36,6 +37,10 @@ export interface MessageIntent {
   authObservation?: Omit<TeamAiAuthObservationInput, "authorization" | "binding">;
   reasoningEvidence?: import("./authorization.js").ReasoningEvidence;
   envelopeEvidence?: import("./authorization.js").EnvelopeEvidence;
+  /** Runtime-only permit issued by evaluateC2cTransport. */
+  delegationPermit?: DelegatedTransportPermit;
+  /** A caller cannot select the delegated route with a boolean. */
+  delegationRequired?: never;
 }
 
 export interface MessageAdapter {
@@ -279,6 +284,17 @@ async function deliverAuthorizedMessage(
 ): Promise<DeliveryOutcome> {
   const binding = authorizedBinding(intent);
   const authorization = intent.authorization!;
+  if (authorization.delegation) {
+    assertDelegatedTransportPermit(intent.delegationPermit);
+    if (
+      intent.delegationPermit.grantId !== authorization.delegation.grantId ||
+      intent.delegationPermit.grantGeneration !== authorization.delegation.grantGeneration ||
+      intent.delegationPermit.reservationId !== authorization.delegation.reservationId ||
+      intent.delegationPermit.decisionDigest !== authorization.delegation.decisionDigest
+    ) {
+      throw new Error("delegated transport permit does not match the persisted A0 authority");
+    }
+  }
   const messageType = intent.messageType!;
   const payloadHash = intent.payloadHash!;
   if (intent.operationTarget && (!authorization.operationTarget || !operationTargetsMatch(intent.operationTarget, authorization.operationTarget))) {
@@ -372,6 +388,9 @@ async function deliverAuthorizedMessage(
 
 /** Deliver one control message at most once; ambiguous transport never triggers a blind resend. */
 export async function deliverMessage(intent: MessageIntent, adapter: MessageAdapter): Promise<DeliveryOutcome> {
+  if (Object.prototype.hasOwnProperty.call(intent as object, "delegationRequired")) {
+    throw new Error("delegated route is policy-classified; delegationRequired is not accepted");
+  }
   const key = intent.authorization && intent.binding?.eventKey ? intent.binding.eventKey : messageIdempotencyKey(intent);
   const checkpoint = loadCheckpoint(intent, key);
   if (intent.authorization || intent.binding || intent.messageType || intent.payloadHash) {

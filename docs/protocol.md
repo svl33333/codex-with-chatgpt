@@ -43,6 +43,20 @@ Local checkpoint values (session only):
 Legacy sessions without a checkpoint keep the old loop. The first normal
 iteration after this version writes a checkpoint automatically.
 
+## Delegation proofs
+
+The A1 delegated layer uses a closed action vocabulary (`c2c_transport`,
+`workspace_read`, and `operation_reconcile`). It emits a versioned allow/deny
+proof with scope, target, binding, expiry, finite-use, and reservation
+digests. The proof is query evidence only: it cannot be passed to the A0
+issuer as authority and cannot select the legacy delivery branch.
+
+Provider/account/capability predicates are action-specific. A bounded local
+`workspace_read` and the current provider-free C2C transport path do not call
+`github-cli-auth`; a known operation requests TeamAI evidence only when its
+persisted policy-owned reconciliation path is provider-bound. Local persisted
+evidence never manufactures a GitHub-auth dependency.
+
 Do not re-pair, recreate the connector, or rewrite Project instructions
 just to resume.
 

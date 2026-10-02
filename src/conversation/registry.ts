@@ -25,6 +25,10 @@ export interface ConversationBinding {
   eventKey?: string;
   operationKey?: string;
   operationTarget?: GitHubOperationTarget;
+  /** Non-authoritative resume metadata; the grant is always reloaded. */
+  delegationGrantId?: string;
+  delegationGrantGeneration?: number;
+  delegationScopeDigest?: string;
   updatedAt: string;
 }
 

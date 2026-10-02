@@ -32,6 +32,19 @@ export function stateSubdir(name: string): string {
   return ensureDir(path.join(getStateDir(), name));
 }
 
+/**
+ * Durable A1 delegation state is kept separate from the A0 transport records.
+ * Keeping this helper in the state-path module makes the boundary explicit and
+ * gives tests one deterministic root to isolate with C2C_STATE_DIR.
+ */
+export function delegationRoot(): string {
+  return stateSubdir("delegation");
+}
+
+export function delegationSubdir(name: string): string {
+  return ensureDir(path.join(delegationRoot(), name));
+}
+
 /** Write a JSON file with owner-only permissions. */
 export function writeSecureJson(file: string, data: unknown): void {
   ensureDir(path.dirname(file));

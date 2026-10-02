@@ -27,6 +27,7 @@ import {
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
+import { parseStrictJson } from "../config/strict-json.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import {
   mergeUiPrefs,
@@ -79,6 +80,20 @@ import { createDurableTransportTransaction } from "../conversation/transaction.j
 import { assertTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiObservation } from "../conversation/teamai.js";
 import type { GitHubOperationKind, GitHubOperationTarget } from "../conversation/operation.js";
 import type { AuthorizedMessageAdapter } from "../conversation/delivery.js";
+import {
+  assertAuthoritativeRevocation,
+  createDelegationGrant,
+  evaluateDelegationProof,
+  loadDelegationGrant,
+  readDelegationAudit,
+  revokeDelegationGrant,
+  supersedeDelegationGrant,
+  type CreateDelegationGrantInput,
+  type DelegationApprovalProvenance,
+  type DelegationEvaluation,
+  type DelegationRevocationProvenance,
+  type DelegationRequest,
+} from "../conversation/delegation.js";
 import {
   canonicalRepositoryFor,
   endpointFingerprint,
@@ -169,6 +184,186 @@ function readJsonRecord(fileName: string, maxBytes = 256 * 1024): Record<string,
   return parsed as Record<string, unknown>;
 }
 
+/** A1 authorization inputs cross a duplicate-aware raw JSON boundary. */
+function readStrictJsonRecord(fileName: string, maxBytes = 256 * 1024): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = parseStrictJson(readCappedUtf8(path.resolve(fileName), maxBytes));
+  } catch {
+    throw new Error(`invalid strict JSON input: ${path.basename(fileName)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`strict JSON input must be an object: ${path.basename(fileName)}`);
+  return parsed as Record<string, unknown>;
+}
+
+function rejectJsonKeys(record: Record<string, unknown>, allowed: readonly string[], source: string): void {
+  const accepted = new Set(allowed);
+  for (const key of Object.keys(record)) {
+    if (!accepted.has(key)) throw new Error(`${source} contains unsupported field ${key}`);
+  }
+}
+
+function requiredJsonRecord(record: Record<string, unknown>, key: string, source: string): Record<string, unknown> {
+  const value = record[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${source} requires object field ${key}`);
+  return value as Record<string, unknown>;
+}
+
+function parseApprovalProvenance(record: Record<string, unknown>, source: string): DelegationApprovalProvenance {
+  rejectJsonKeys(record, ["workflowStatePath", "checkpoint", "decisionId", "approverIdentityRef", "approvedAt", "approvedDigest"], source);
+  return {
+    workflowStatePath: requiredJsonString(record, "workflowStatePath", source),
+    checkpoint: requiredJsonString(record, "checkpoint", source),
+    decisionId: requiredJsonString(record, "decisionId", source),
+    approverIdentityRef: requiredJsonString(record, "approverIdentityRef", source),
+    approvedAt: requiredJsonString(record, "approvedAt", source),
+    approvedDigest: requiredJsonString(record, "approvedDigest", source),
+  };
+}
+
+function parseRevocationProvenance(fileName: string): DelegationRevocationProvenance {
+  const source = path.basename(fileName);
+  const raw = readStrictJsonRecord(fileName);
+  rejectJsonKeys(raw, ["workflowStatePath", "checkpoint", "decisionId", "approverIdentityRef", "approvedAt", "approvedDigest", "grantId", "reason"], source);
+  return {
+    workflowStatePath: requiredJsonString(raw, "workflowStatePath", source),
+    checkpoint: requiredJsonString(raw, "checkpoint", source),
+    decisionId: requiredJsonString(raw, "decisionId", source),
+    approverIdentityRef: requiredJsonString(raw, "approverIdentityRef", source),
+    approvedAt: requiredJsonString(raw, "approvedAt", source),
+    approvedDigest: requiredJsonString(raw, "approvedDigest", source),
+    grantId: requiredJsonString(raw, "grantId", source),
+    ...(optionalJsonString(raw, "reason", source) ? { reason: optionalJsonString(raw, "reason", source) } : {}),
+  };
+}
+
+function parseDelegationGrantInput(fileName: string): CreateDelegationGrantInput {
+  const source = path.basename(fileName);
+  const raw = readStrictJsonRecord(fileName);
+  rejectJsonKeys(raw, [
+    "action", "scope", "target", "approval", "approvalProvenance", "grantId", "createdAt", "notBefore", "expiresAt",
+    "maxUses", "singleUse", "providerRequirement", "supersedesGrantIds",
+  ], source);
+  const input: CreateDelegationGrantInput = {
+    action: requiredJsonString(raw, "action", source),
+    scope: requiredJsonRecord(raw, "scope", source),
+    target: requiredJsonRecord(raw, "target", source),
+  };
+  const approvalValue = raw.approval ?? raw.approvalProvenance;
+  if (!approvalValue || typeof approvalValue !== "object" || Array.isArray(approvalValue)) throw new Error(`${source} requires grant-specific approval provenance`);
+  input.approval = parseApprovalProvenance(approvalValue as Record<string, unknown>, `${source}.approval`);
+  for (const key of ["grantId", "createdAt", "notBefore", "expiresAt"] as const) {
+    const value = optionalJsonString(raw, key, source);
+    if (value !== undefined) input[key] = value;
+  }
+  if (raw.maxUses !== undefined) {
+    if (typeof raw.maxUses !== "number" || !Number.isSafeInteger(raw.maxUses) || raw.maxUses < 1) throw new Error(`${source} field maxUses must be a positive safe integer`);
+    input.maxUses = raw.maxUses;
+  }
+  if (raw.singleUse !== undefined) {
+    if (typeof raw.singleUse !== "boolean") throw new Error(`${source} field singleUse must be boolean`);
+    input.singleUse = raw.singleUse;
+  }
+  if (raw.supersedesGrantIds !== undefined) {
+    if (!Array.isArray(raw.supersedesGrantIds) || raw.supersedesGrantIds.some((id) => typeof id !== "string" || !id.trim())) throw new Error(`${source} field supersedesGrantIds must be an array of non-empty strings`);
+    input.supersedesGrantIds = raw.supersedesGrantIds.map((id) => String(id).trim());
+  }
+  if (raw.providerRequirement !== undefined) {
+    const provider = requiredJsonRecord(raw, "providerRequirement", source);
+    rejectJsonKeys(provider, ["source", "skillName", "capabilityVersion", "expectedAccount", "minCapabilityVersion", "maxCapabilityVersion"], `${source}.providerRequirement`);
+    input.providerRequirement = {
+      source: requiredJsonString(provider, "source", `${source}.providerRequirement`) as "teamai",
+      skillName: requiredJsonString(provider, "skillName", `${source}.providerRequirement`) as "github-cli-auth",
+      capabilityVersion: requiredJsonString(provider, "capabilityVersion", `${source}.providerRequirement`),
+      expectedAccount: requiredJsonString(provider, "expectedAccount", `${source}.providerRequirement`),
+      ...(optionalJsonString(provider, "minCapabilityVersion", `${source}.providerRequirement`) ? { minCapabilityVersion: optionalJsonString(provider, "minCapabilityVersion", `${source}.providerRequirement`) } : {}),
+      ...(optionalJsonString(provider, "maxCapabilityVersion", `${source}.providerRequirement`) ? { maxCapabilityVersion: optionalJsonString(provider, "maxCapabilityVersion", `${source}.providerRequirement`) } : {}),
+    };
+  }
+  return input;
+}
+
+function sanitizedGrant(grant: ReturnType<typeof loadDelegationGrant>): Record<string, unknown> | null {
+  if (!grant) return null;
+  return {
+    schemaVersion: grant.schemaVersion,
+    policyVersion: grant.policyVersion,
+    grantId: grant.grantId,
+    generation: grant.generation,
+    createdAt: grant.createdAt,
+    notBefore: grant.notBefore,
+    expiresAt: grant.expiresAt,
+    action: grant.action,
+    route: grant.route,
+    scopeDigest: grant.scopeDigest,
+    targetDigest: grant.targetDigest,
+    maxUses: grant.maxUses,
+    useCount: grant.useCount,
+    status: grant.status,
+    approvalDecisionId: grant.approval.decisionId,
+    approvalDigest: grant.approval.approvedDigest,
+    providerRequirement: grant.providerRequirement ?? null,
+    supersedesGrantIds: grant.supersedesGrantIds ?? [],
+    supersededBy: grant.supersededBy ?? null,
+    revokedAt: grant.revokedAt ?? null,
+  };
+}
+
+function parseDelegationRequestInput(fileName: string, bindingFile: string, workspaceRoot: string): DelegationRequest {
+  const source = path.basename(fileName);
+  const raw = readStrictJsonRecord(fileName);
+  rejectJsonKeys(raw, ["action", "scope", "target", "grantId", "delegationRequired", "decisionInstanceId", "providerEvidence", "grant"], source);
+  if (raw.grant !== undefined) throw new Error(`${source} must reference a durable grant by grantId; structural grants are not accepted from CLI JSON`);
+  if (raw.providerEvidence !== undefined) throw new Error(`${source} must not carry a structural TeamAI result; use the trusted provider options`);
+  const grantId = optionalJsonString(raw, "grantId", source);
+  const scope = requiredJsonRecord(raw, "scope", source);
+  const candidate = parseBindingInput(bindingFile, true);
+  const activeBinding = deriveActiveCanonicalBinding({ workspaceRoot, workspaceId: candidate.workspaceId, candidate });
+  return {
+    action: requiredJsonString(raw, "action", source),
+    scope,
+    target: requiredJsonRecord(raw, "target", source),
+    ...(grantId ? { grantId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(raw, "delegationRequired") ? { delegationRequired: raw.delegationRequired } : {}),
+    ...(Object.prototype.hasOwnProperty.call(raw, "decisionInstanceId") ? { decisionInstanceId: raw.decisionInstanceId as never } : {}),
+    activeBinding,
+  };
+}
+
+function delegationEvaluationPayload(evaluation: DelegationEvaluation, request: DelegationRequest): Record<string, unknown> {
+  return {
+    ok: evaluation.proof.decision === "ALLOW",
+    proof: evaluation.proof,
+    reservation: evaluation.reservation
+      ? { reservationId: evaluation.reservation.reservationId, state: evaluation.reservation.state, decisionInstanceId: evaluation.reservation.decisionInstanceId, auditReference: evaluation.reservation.auditReference ?? null }
+      : null,
+    grant: sanitizedGrant(evaluation.grant ?? (request.grantId ? loadDelegationGrant(request.grantId) : null)),
+    result: evaluation.result ?? null,
+  };
+}
+
+async function resolveDelegationProviderIfRequired(
+  request: DelegationRequest,
+  evaluation: DelegationEvaluation,
+  providerModule: string | undefined,
+  observationFile: string | undefined,
+): Promise<DelegationEvaluation> {
+  if (Boolean(providerModule) !== Boolean(observationFile)) throw new Error("--provider-module and --observation-file must be supplied together");
+  if (request.action === "workspace_read" || request.action === "c2c_transport") {
+    if (providerModule || observationFile) throw new Error("provider evidence is irrelevant for this A1 action");
+    return evaluation;
+  }
+  if (!providerModule || !observationFile) return evaluation;
+  if (evaluation.proof.evidencePath !== "provider_bound") throw new Error("provider evidence is not required by the policy-derived reconciliation path");
+  const providerPath = assertTeamAiProviderModule(providerModule);
+  const loaded = await import(pathToFileURL(providerPath).href);
+  const provider = loaded.default ?? loaded.provider;
+  assertTeamAiCapabilityProvider(provider);
+  const observation = parseTeamAiObservationInput(observationFile);
+  request.providerEvidence = resolveTeamAiAuthResult(provider, observation);
+  return evaluateDelegationProof(request);
+}
+
 function requiredJsonString(record: Record<string, unknown>, key: string, source: string): string {
   const value = record[key];
   if (typeof value !== "string" || !value.trim()) throw new Error(`${source} requires string field ${key}`);
@@ -222,7 +417,7 @@ function assertTeamAiProviderModule(fileName: string): string {
 
 function parseTeamAiObservationInput(fileName: string): TeamAiObservation {
   const source = path.basename(fileName);
-  const raw = readJsonRecord(fileName);
+  const raw = readStrictJsonRecord(fileName);
   if (Object.prototype.hasOwnProperty.call(raw, "classification")) {
     throw new Error(`${source} must not contain a classification; TeamAI must supply it`);
   }
@@ -235,9 +430,9 @@ function parseTeamAiObservationInput(fileName: string): TeamAiObservation {
   };
 }
 
-function parseBindingInput(fileName: string): TransportBindingIdentity {
+function parseBindingInput(fileName: string, strict = false): TransportBindingIdentity {
   const source = path.basename(fileName);
-  const raw = readJsonRecord(fileName);
+  const raw = strict ? readStrictJsonRecord(fileName) : readJsonRecord(fileName);
   const binding: TransportBindingIdentity = {
     workspaceId: requiredJsonString(raw, "workspaceId", source),
     taskId: requiredJsonString(raw, "taskId", source),
@@ -1820,6 +2015,144 @@ transport
     const payload = { ok: true, eventKey: revoked.eventKey, generation: revoked.generation, revokedAt: revoked.revokedAt ?? null };
     if (opts.json) say(JSON.stringify(payload));
     else check(`配送権限を失効させました（${revoked.eventKey}）`);
+  });
+
+const delegationCmd = program.command("delegation").description("Inspect and evaluate bounded A1 delegation evidence");
+
+delegationCmd
+  .command("inspect")
+  .description("Show sanitized durable grant and audit evidence (read-only)")
+  .requiredOption("--grant-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { grantId: string; json: boolean }) => {
+    try {
+      const grant = loadDelegationGrant(opts.grantId);
+      const payload = {
+        ok: Boolean(grant),
+        grant: sanitizedGrant(grant),
+        audit: grant ? readDelegationAudit(grant.grantId) : [],
+      };
+      if (opts.json) say(JSON.stringify(payload));
+      else if (!grant) cross("delegation grant is not known");
+      else say(JSON.stringify(payload, null, 2));
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("grant-create")
+  .description("Create one durable grant from an exact canonical grant-decision record")
+  .requiredOption("--input <path>", "strict JSON grant contract and approval provenance")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { input: string; json: boolean }) => {
+    try {
+      const grant = createDelegationGrant(parseDelegationGrantInput(opts.input));
+      const payload = { ok: true, grant: sanitizedGrant(grant) };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`委任グラントを作成しました（${grant.grantId}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("grant-revoke")
+  .description("Revoke one durable grant from an exact canonical revocation decision")
+  .requiredOption("--grant-id <id>")
+  .requiredOption("--input <path>", "strict JSON canonical revocation decision and provenance")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { grantId: string; input: string; json: boolean }) => {
+    try {
+      const approval = parseRevocationProvenance(opts.input);
+      const grant = loadDelegationGrant(opts.grantId);
+      if (!grant) throw new Error("delegation grant is not known");
+      assertAuthoritativeRevocation(grant, approval);
+      const revoked = revokeDelegationGrant(grant, { reason: approval.reason, approval });
+      const payload = { ok: true, grant: sanitizedGrant(revoked) };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`委任グラントを失効させました（${revoked.grantId}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("grant-supersede")
+  .description("Explicitly supersede a grant with a durable approved replacement")
+  .requiredOption("--grant-id <id>")
+  .requiredOption("--replacement-id <id>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { grantId: string; replacementId: string; json: boolean }) => {
+    try {
+      const replacement = loadDelegationGrant(opts.replacementId);
+      if (!replacement) throw new Error("replacement delegation grant is not known");
+      const grant = supersedeDelegationGrant(opts.grantId, replacement);
+      const payload = { ok: true, grant: sanitizedGrant(grant), replacement: sanitizedGrant(replacement) };
+      if (opts.json) say(JSON.stringify(payload));
+      else check(`委任グラントを明示的に置換しました（${grant.grantId} → ${replacement.grantId}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("read")
+  .description("Execute one exact bounded workspace_read grant without GitHub authentication")
+  .requiredOption("--request <path>", "strict JSON workspace_read action, scope, target, and grant reference")
+  .requiredOption("--binding-file <path>", "strict JSON candidate binding revalidated against the active canonical workspace")
+  .option("-w, --workspace <path>", "active workspace root (defaults to the current directory)")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { request: string; bindingFile: string; workspace?: string; json: boolean }) => {
+    try {
+      const request = parseDelegationRequestInput(opts.request, opts.bindingFile, resolveWorkspace(opts.workspace));
+      if (request.action !== "workspace_read") throw new Error("delegation read requires action workspace_read");
+      const evaluation = createDurableTransportTransaction().evaluateWorkspaceRead(request);
+      say(JSON.stringify(delegationEvaluationPayload(evaluation, request)));
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("reconcile")
+  .description("Execute one policy-derived operation_reconcile grant")
+  .requiredOption("--request <path>", "strict JSON operation_reconcile action, scope, target, and grant reference")
+  .requiredOption("--binding-file <path>", "strict JSON candidate binding revalidated against the active canonical workspace")
+  .option("-w, --workspace <path>", "active workspace root (defaults to the current directory)")
+  .option("--provider-module <path>", "trusted TeamAI github-cli-auth provider module")
+  .option("--observation-file <path>", "strict JSON provider observation without classification")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { request: string; bindingFile: string; workspace?: string; providerModule?: string; observationFile?: string; json: boolean }) => {
+    try {
+      const request = parseDelegationRequestInput(opts.request, opts.bindingFile, resolveWorkspace(opts.workspace));
+      if (request.action !== "operation_reconcile") throw new Error("delegation reconcile requires action operation_reconcile");
+      const proof = evaluateDelegationProof(request);
+      await resolveDelegationProviderIfRequired(request, proof, opts.providerModule, opts.observationFile);
+      const evaluation = createDurableTransportTransaction().evaluateOperationReconcile(request);
+      say(JSON.stringify(delegationEvaluationPayload(evaluation, request)));
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+delegationCmd
+  .command("evaluate")
+  .description("Evaluate a strict A1 request and return a proof/result without issuing A0 authority")
+  .requiredOption("--request <path>", "strict JSON action, scope, target, and grant reference")
+  .requiredOption("--binding-file <path>", "strict JSON candidate binding revalidated against the active canonical workspace")
+  .option("-w, --workspace <path>", "active workspace root (defaults to the current directory)")
+  .option("--provider-module <path>", "trusted TeamAI github-cli-auth provider module")
+  .option("--observation-file <path>", "strict JSON provider observation without classification")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { request: string; bindingFile: string; workspace?: string; providerModule?: string; observationFile?: string; json: boolean }) => {
+    try {
+      const request = parseDelegationRequestInput(opts.request, opts.bindingFile, resolveWorkspace(opts.workspace));
+      const evaluation = await resolveDelegationProviderIfRequired(request, evaluateDelegationProof(request), opts.providerModule, opts.observationFile);
+      say(JSON.stringify(delegationEvaluationPayload(evaluation, request)));
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
   });
 
 const prefsCmd = program
