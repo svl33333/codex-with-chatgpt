@@ -16,7 +16,7 @@ Gate are complete.
 | Issue | `#8`, `https://github.com/svl33333/codex-with-chatgpt/issues/8` |
 | Workstream | `a1-delegated-authorization` |
 | Branch | `a1-delegated-authorization` |
-| Worktree | `C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a1-delegated-authorization` |
+| Worktree | `a1-delegated-authorization-worktree` |
 | Base / current HEAD | `release/v0.1.3-svl.13` / `b36a38cdd613ef474460e2ebc4a62180a93e99c7` |
 | Workflow contract | `codex-c2c-v2` 2.3.1, commit `60d17218c256098522e063b5bf4731cecc9c1f12` |
 | Review contract | `schema/c2c-review-contract.json`, contract version `2.3.1` |

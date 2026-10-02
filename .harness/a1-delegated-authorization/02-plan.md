@@ -17,7 +17,7 @@ scope.
 | Issue | `#8`, `https://github.com/svl33333/codex-with-chatgpt/issues/8` |
 | Workstream | `a1-delegated-authorization` |
 | Branch | `a1-delegated-authorization` |
-| Worktree | `C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a1-delegated-authorization` |
+| Worktree | `a1-delegated-authorization-worktree` |
 | Base / current HEAD | `release/v0.1.3-svl.13` / `b36a38cdd613ef474460e2ebc4a62180a93e99c7` |
 | Workflow contract | `codex-c2c-v2` 2.3.1, commit `60d17218c256098522e063b5bf4731cecc9c1f12` |
 | Review contract | `schema/c2c-review-contract.json`, contract version `2.3.1` |
@@ -787,10 +787,10 @@ gate is now the next stop.
 
 ## C2C Review Summary
 
-- Reviewer binding: ChatGPT planning/review layer in Project `codex-with-chatgpt-a1-delegated-authorization`, using the isolated connector `Codex with ChatGPT · codex-with-chatgpt-a1-delegated-auth · 2aa24f13` only.
-- Project: `https://chatgpt.com/g/g-p-6abe8a9125b4819185ef2dd6ffba5628/project`
-- Reviewer chat: `https://chatgpt.com/g/g-p-6abe8a9125b4819185ef2dd6ffba5628-codex-with-chatgpt-a1-delegated-authorization/c/6abe8bae-ec9c-83ee-af80-f087b9e18354`
-- `workspace_info`: workspace ID `bc29499cac43`, name `codex-with-chatgpt-a1-delegated-authorization`, canonical repository `C:/Projects/ai-agent-harness-setup/work/codex-with-chatgpt`, linked worktree `codex-with-chatgpt-a1-delegated-authorization` under the canonical repository `.git/worktrees/`, branch `a1-delegated-authorization`, observed HEAD `b36a38cdd613ef474460e2ebc4a62180a93e99c7`. At that Step 3 review point, only the A1 harness directory was untracked and the source diff was empty.
+- Reviewer binding: the isolated A1 ChatGPT planning/review layer, represented in committed evidence by the logical connector label `a1-read-only-reviewer` only.
+- Project: local Project binding intentionally omitted from committed evidence.
+- Reviewer chat: local reviewer-chat binding intentionally omitted from committed evidence.
+- `workspace_info`: logical workspace label `a1-delegated-authorization-workspace`, repository `svl33333/codex-with-chatgpt`, linked worktree label `a1-delegated-authorization-worktree`, branch `a1-delegated-authorization`, observed HEAD `b36a38cdd613ef474460e2ebc4a62180a93e99c7`. At that Step 3 review point, only the A1 harness directory was untracked and the source diff was empty.
 - Checkpoint: `c2c_2e0a`, Step 3 `pre_implementation`; iterations 0, 1, 3, and 4 were `FIX_REQUIRED`, and iterations 2 and 5 were terminal `PASS` for their respective reviewed artifacts.
 - Reviewed artifact hash at iteration 5: `E02D1D9276399A27660AA0E310687A1A838C30E7819AF6B6691A8E32A89EFBE9`. The promoted final artifact hash is recorded below and in canonical state.
 - Findings/remediation: iteration 0 required class-specific local-read continuations, policy-owned delegated routing, pre-parse duplicate-key rejection, injected-clock/in-lock expiry checks, atomic event-first/grant-second reservation/A0 recovery, legacy lease-shape/live-owner compatibility, and an in-process branded TeamAI boundary. Iteration 1 required class-specific finite-use commit/retry identity, separation of new-grant applicability from recovery of persisted A0 authority, and removal of generic all-actions-get-A0 wording. All findings were remediated in the plan only.

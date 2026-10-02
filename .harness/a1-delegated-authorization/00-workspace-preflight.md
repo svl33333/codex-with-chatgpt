@@ -7,14 +7,13 @@ Approval Human Gate.
 ## Target identity
 
 - Workstream: `a1-delegated-authorization`
-- Workspace root: `C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a1-delegated-authorization`
-- Workspace ID: `bc29499cac43`
+- Workspace root: `a1-delegated-authorization-worktree`
+- Workspace label: `a1-delegated-authorization-workspace`
 - Repository: `https://github.com/svl33333/codex-with-chatgpt`
 - Branch: `a1-delegated-authorization`
 - Base/head: `b36a38cdd613ef474460e2ebc4a62180a93e99c7`
-- Installation ID: `2aa24f13-b64e-45d1-8b78-12e0d793ef1c`
 - Runtime: `0.1.3-svl.13`
-- Expected connector: `Codex with ChatGPT · codex-with-chatgpt-a1-delegated-auth · 2aa24f13`
+- Expected connector: `a1-read-only-reviewer`
 
 ## Local checks
 

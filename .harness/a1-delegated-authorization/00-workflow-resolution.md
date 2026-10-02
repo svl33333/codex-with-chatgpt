@@ -4,7 +4,7 @@
 
 - Workstream: `a1-delegated-authorization`
 - Repository: `svl33333/codex-with-chatgpt`
-- Local workspace: `C:\Projects\ai-agent-harness-setup\work\codex-with-chatgpt-a1-delegated-authorization`
+- Local workspace: `a1-delegated-authorization-worktree`
 - Local branch: `a1-delegated-authorization`
 - Source branch: `release/v0.1.3-svl.13`
 - Live base commit: `b36a38cdd613ef474460e2ebc4a62180a93e99c7`
