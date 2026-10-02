@@ -72,8 +72,9 @@ workflow:
       performed. Before that gate, a merge-gate inspection identified
       committed environment-specific A1 harness metadata prohibited by the
       pinned 2.3.1 security contract. The previous Step 7 PASS is superseded
-      for this new PR head; only publication-hygiene sanitization is in scope,
-      followed by the required Step 7 C2C re-review.
+      for this new PR head; only publication-hygiene sanitization is in scope.
+      The sanitized metadata was committed as 1bb0903 and pushed to PR #9;
+      the required Step 7 C2C re-review is pending against that new head.
   requirements:
     artifact: .harness/a1-delegated-authorization/00-requirements-working.md
     status: APPROVED
@@ -132,16 +133,18 @@ git:
   source_branch: release/v0.1.3-svl.13
   base_branch: release/v0.1.3-svl.13
   base_head: b36a38cdd613ef474460e2ebc4a62180a93e99c7
-  head: f46b8da
+  head: 1bb0903d24f2cd765ed216e1ff82599f9be6030b
   dirty: true
   uncommitted_scope_note: >-
-    Only canonical post-publication bookkeeping is uncommitted; the approved
-    A1 implementation and tests were published at f46b8da. The review-only
-    _prepublish-review directory was excluded from the publication.
+    Only the intentionally local final-review artifact is uncommitted; it is
+    excluded from publication. The approved A1 implementation and tests plus
+    the metadata hygiene remediation are published at
+    1bb0903d24f2cd765ed216e1ff82599f9be6030b. The review-only
+    _prepublish-review directory was excluded from publication.
   remote_url: https://github.com/svl33333/codex-with-chatgpt.git
   remote_branch: a1-delegated-authorization
   remote_status: PUBLISHED
-  remote_head: f46b8da
+  remote_head: 1bb0903d24f2cd765ed216e1ff82599f9be6030b
   pr:
     number: 9
     url: https://github.com/svl33333/codex-with-chatgpt/pull/9
@@ -150,7 +153,7 @@ git:
     base_branch: release/v0.1.3-svl.13
     base_head: b36a38cdd613ef474460e2ebc4a62180a93e99c7
     head_branch: a1-delegated-authorization
-    head_sha: f46b8da
+    head_sha: 1bb0903d24f2cd765ed216e1ff82599f9be6030b
   worktree_label: a1-delegated-authorization-worktree
 artifacts:
   - .harness/a1-delegated-authorization/00-workflow-resolution.md
@@ -173,4 +176,4 @@ c2c:
 next:
   action: complete canonical Step 7 C2C final review against the sanitized published head, then request explicit human merge approval
   blocked_on: C2C final review
-updated_at: "2026-10-02T20:36:05+09:00"
+updated_at: "2026-10-02T20:43:02+09:00"
