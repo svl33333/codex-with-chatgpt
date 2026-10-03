@@ -61,9 +61,36 @@ describe("machine-local C2C provisioning state", () => {
     const saved = writeProvisioningState("workspace-a", "ready", {
       reason: "workspace_info verified",
       retryCount: 2,
+      selectedSurface: "plugin-hub-custom-mcp",
+      outcome: "REUSED",
+      accountVerified: true,
+      readOnlyVerified: true,
+      oauthContractVerified: true,
+      projectVerified: true,
+      messageSelectionVerified: true,
+      messageSelectionKey: "message-key-proof",
     });
     expect(readProvisioningState("workspace-a")).toEqual(saved);
     const file = `${stateDir}/provisioning/workspace-a.json`;
-    expect(fs.readFileSync(file, "utf8")).not.toMatch(/token|cookie|pairing|message/i);
+    expect(fs.readFileSync(file, "utf8")).not.toMatch(/token|cookie|pairing|messageBody|messageHash/i);
+  });
+
+  it("does not persist ready without complete live verification proof", () => {
+    const saved = writeProvisioningState("workspace-a", "ready", { reason: "acknowledgement only" });
+    expect(saved.phase).toBe("workspace_verification");
+    expect(saved.reason).toBe("acknowledgement only");
+  });
+
+  it("does not accept a boolean message proof without the matching delivery key", () => {
+    const saved = writeProvisioningState("workspace-a", "ready", {
+      selectedSurface: "plugin-hub-custom-mcp",
+      outcome: "REUSED",
+      accountVerified: true,
+      readOnlyVerified: true,
+      oauthContractVerified: true,
+      projectVerified: true,
+      messageSelectionVerified: true,
+    });
+    expect(saved.phase).toBe("workspace_verification");
   });
 });

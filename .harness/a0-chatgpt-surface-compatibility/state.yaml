@@ -1,0 +1,95 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.3.1
+  spec_commit: 60d17218c256098522e063b5bf4731cecc9c1f12
+  review_contract: schema/c2c-review-contract.json
+  resolver_validation_status: WORKFLOW_READY
+  direct_validator_status: passed
+  step: 7
+  stage: Final Review / Merge
+  status: HUMAN_WAITING
+  previous_terminal_marker: PR_PUBLISHED_FOR_FINAL_REVIEW
+  terminal_marker: READY_FOR_MERGE
+  step4_approval:
+    route: direct
+    artifact: 02-plan.md
+    approved: true
+    approved_at: "2026-10-03T22:06:28+09:00"
+  last_completed_action: >-
+    Step 5 passed its bounded C2C review. The user explicitly approved Step 6
+    Push/PR publication; commit 0a6fbaf was pushed and PR #12 was created.
+    The bounded final remote-diff C2C review passed at iteration 7. Final
+    review evidence is recorded in 05-final-review.md. No A2 change or merge
+    has occurred.
+  requirements:
+    artifact: .harness/a0-chatgpt-surface-compatibility/00-requirements-working.md
+    status: APPROVED
+    resolved_qids: [Q601, Q602, Q603, Q604, Q605, Q606, Q607, Q608]
+    open_qids: []
+    pending_qids: []
+    no_new_qid_required: true
+    approved_at: "2026-10-03T10:48:39+09:00"
+    approval_source: "explicit user response: 承認"
+    terminal_marker: REQUIREMENTS_READY_FOR_APPROVAL
+  issue_conversion:
+    status: COMPLETE
+    attempted_at: "2026-10-03T10:47:40+09:00"
+    completed_at: "2026-10-03T10:48:39+09:00"
+    existing_issue_reconciled: true
+    existing_issue_count: 0
+    issue_created: true
+    issue_number: 11
+    issue_url: https://github.com/svl33333/codex-with-chatgpt/issues/11
+    conversion: pure_requirements_to_issue
+    snapshot_artifact: .harness/a0-chatgpt-surface-compatibility/01-issue-snapshot.md
+issue:
+  number: 11
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/11
+  title: "A0: ChatGPT Surface Compatibility Maintenance"
+git:
+  branch: a0-chatgpt-surface-compatibility
+  source_branch: main
+  base_branch: main
+  base_head: d030a196a8cb3ed4fca4573c174ebf7fa47c720c
+  head: b7574c54c1136a78105b5395427f5d93ada3f9a8
+  dirty: false
+  remote_url: https://github.com/svl33333/codex-with-chatgpt.git
+  worktree_label: a0-chatgpt-surface-compatibility-worktree
+publication:
+  commit: b7574c54c1136a78105b5395427f5d93ada3f9a8
+  pull_request_number: 12
+  pull_request_url: https://github.com/svl33333/codex-with-chatgpt/pull/12
+  base: main
+  checks: none_reported
+  merge_state: CLEAN
+artifacts:
+  - .harness/a0-chatgpt-surface-compatibility/00-workflow-resolution.md
+  - .harness/a0-chatgpt-surface-compatibility/00-requirements-working.md
+  - .harness/a0-chatgpt-surface-compatibility/01-issue-snapshot.md
+  - .harness/a0-chatgpt-surface-compatibility/02-plan-draft.md
+  - .harness/a0-chatgpt-surface-compatibility/03-manual-fallback-evidence.md
+  - .harness/a0-chatgpt-surface-compatibility/04-fresh-session-helper-diagnostic.md
+  - .harness/a0-chatgpt-surface-compatibility/05-sandbox-helper-repair-evidence.md
+  - .harness/a0-chatgpt-surface-compatibility/06-project-name-compatibility.md
+  - .harness/a0-chatgpt-surface-compatibility/07-c2c-git-visibility-diagnostic.md
+  - .harness/a0-chatgpt-surface-compatibility/02-plan.md
+  - .harness/a0-chatgpt-surface-compatibility/04-test-summary.md
+  - .harness/a0-chatgpt-surface-compatibility/04-implementation-log.md
+  - .harness/a0-chatgpt-surface-compatibility/05-final-review.md
+  - .harness/a0-chatgpt-surface-compatibility/state.yaml
+  - docs/current-openai-product-research.md
+c2c:
+  checkpoint: a0-surface-plan
+  final_review_checkpoint: a0-final-review
+  review_stage: final_remote_diff
+  verdict: PASS
+  cycle: 7
+  last_action: PROCEED
+  last_review: "iteration-7 EXECUTED_REVIEW PASS"
+  human_action_queue: []
+next:
+  action: request merge approval
+  blocked_on: merge approval
+updated_at: "2026-10-03T23:29:36+09:00"

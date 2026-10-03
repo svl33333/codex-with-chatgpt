@@ -38,6 +38,7 @@ export interface TokenRecord {
   clientId: string;
   workspaceId: string;
   scopes: string[];
+  resource?: string;
   issuedAt: number;
   expiresAt: number;
   revoked: boolean;
@@ -50,7 +51,7 @@ interface PersistedAuthState {
 
 export type VerifyTokenResult =
   | { ok: true; record: TokenRecord }
-  | { ok: false; reason: "unknown" | "expired" | "revoked" | "wrong_kind" };
+  | { ok: false; reason: "unknown" | "expired" | "revoked" | "wrong_kind" | "wrong_resource" };
 
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -168,6 +169,7 @@ export class AuthStore {
     clientId: string;
     scopes: string[];
     workspaceId?: string;
+    resource?: string;
     accessTtlMs?: number;
   }): { accessToken: string; refreshToken: string | null; expiresIn: number; scopes: string[] } {
     const now = Date.now();
@@ -181,6 +183,7 @@ export class AuthStore {
       clientId: input.clientId,
       workspaceId,
       scopes: input.scopes,
+      ...(input.resource ? { resource: input.resource } : {}),
       issuedAt: now,
       expiresAt: now + accessTtl,
       revoked: false,
@@ -195,6 +198,7 @@ export class AuthStore {
         clientId: input.clientId,
         workspaceId,
         scopes: input.scopes,
+        ...(input.resource ? { resource: input.resource } : {}),
         issuedAt: now,
         expiresAt: now + REFRESH_TOKEN_TTL_MS,
         revoked: false,
@@ -209,31 +213,37 @@ export class AuthStore {
     };
   }
 
-  verifyAccessToken(token: string): VerifyTokenResult {
+  verifyAccessToken(token: string, expectedResource?: string): VerifyTokenResult {
     const record = this.tokens.get(sha256hex(token));
     if (!record) return { ok: false, reason: "unknown" };
     if (record.kind !== "access") return { ok: false, reason: "wrong_kind" };
     if (record.revoked) return { ok: false, reason: "revoked" };
     if (Date.now() > record.expiresAt) return { ok: false, reason: "expired" };
+    if (expectedResource && record.resource !== expectedResource) {
+      return { ok: false, reason: "wrong_resource" };
+    }
     return { ok: true, record };
   }
 
   /** Refresh-token rotation: old refresh token is revoked, a new pair is issued. */
   refresh(
     refreshToken: string,
-    clientId: string
+    clientId: string,
+    expectedResource?: string
   ): { ok: true; tokens: ReturnType<AuthStore["issueTokens"]> } | { ok: false; reason: string } {
     const record = this.tokens.get(sha256hex(refreshToken));
     if (!record || record.kind !== "refresh") return { ok: false, reason: "invalid_grant" };
     if (record.revoked) return { ok: false, reason: "invalid_grant" };
     if (Date.now() > record.expiresAt) return { ok: false, reason: "invalid_grant" };
     if (record.clientId !== clientId) return { ok: false, reason: "invalid_client" };
+    if (expectedResource && record.resource !== expectedResource) return { ok: false, reason: "invalid_grant" };
     record.revoked = true;
     this.tokens.delete(record.hash);
     const tokens = this.issueTokens({
       clientId,
       scopes: record.scopes,
       workspaceId: record.workspaceId,
+      resource: record.resource,
     });
     return { ok: true, tokens };
   }
@@ -271,8 +281,8 @@ export class AuthStore {
 }
 
 export function filterScopes(requested: string | undefined): string[] {
-  if (!requested || requested.trim() === "") return [...SUPPORTED_SCOPES];
+  if (!requested || requested.trim() === "") return SUPPORTED_SCOPES.filter((scope) => scope !== "offline_access");
   const asked = requested.split(/[\s+]+/).filter(Boolean);
-  const granted = asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
-  return granted.length > 0 ? granted : [...SUPPORTED_SCOPES];
+  if (asked.some((scope) => !(SUPPORTED_SCOPES as readonly string[]).includes(scope))) return [];
+  return [...new Set(asked)];
 }

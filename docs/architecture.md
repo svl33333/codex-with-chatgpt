@@ -35,6 +35,12 @@
 - **MCP = data plane**: ChatGPT pulls files/diffs/search results itself.
 - **Read-only by design**: no write/exec tools exist in V1 at all.
 - **Workspace is the security boundary**: one bridge = one workspace = one token audience.
+- **Surface capabilities are semantic**: plugin-hub, settings, and supported
+  authenticated-browser routes are observations with bounded fallbacks, not
+  permanent button-label contracts.
+- **Display labels are not identity**: Project labels are validated against the
+  current 50-character product limit, while workstream, repository, workspace,
+  and connector bindings remain the durable identity dimensions.
 
 ## Components (src/)
 
@@ -60,7 +66,8 @@
 **Authorization**: 401 with `WWW-Authenticate: resource_metadata=…` →
 `/.well-known/oauth-protected-resource/mcp` → AS metadata → DCR →
 `/oauth/authorize` (HTML pairing page) → pairing code verified → 302 with
-authorization code → `/oauth/token` (PKCE S256) → access + refresh tokens.
+authorization code → `/oauth/token` (PKCE S256) → access + refresh tokens
+bound to the canonical MCP resource/audience.
 
 **Ports**: prefer 48765, bind 127.0.0.1 only. On conflict, `/health` identifies
 whether the occupant is a c2c bridge for the same workspace (reuse) or not

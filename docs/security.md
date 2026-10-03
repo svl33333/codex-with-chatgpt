@@ -34,9 +34,16 @@
 ## Token & scope design
 
 Scopes: `workspace.read`, `workspace.search`, `git.read`, `execution.read`,
-`offline_access`. Tools enforce scopes individually (`INSUFFICIENT_SCOPE`).
-Access tokens: 1 hour. Refresh tokens: 30 days, rotated. All tokens bound to
-`workspace_id` and `client_id`.
+`offline_access`. Explicit unknown or write scopes are rejected rather than
+silently expanded. Tools enforce scopes individually (`INSUFFICIENT_SCOPE`).
+Access tokens: 1 hour. Refresh tokens: 30 days, rotated. Tokens are bound to
+`workspace_id`, `client_id`, and (when issued through OAuth) the canonical MCP
+resource/audience; bearer middleware rejects a mismatched resource.
+
+Current-message app selection is a separate trust fact from persistent Project
+binding. A fresh MCP request must record exact app selection and reuse the
+delivery message idempotency identity; a previous successful invocation cannot
+authorize a different or unselected app.
 
 ## Storage
 

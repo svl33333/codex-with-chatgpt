@@ -33,12 +33,24 @@ enough: the saved ChatGPT conversation must pass `workspace_info` again. If
 that old chat still cannot read the workspace, open a new chat in the same
 Project (or switch long-chat) and continue there.
 
-Fixed ChatGPT pages for first-time setup and later repair (do not hunt the UI):
+Supported semantic ChatGPT surfaces for first-time setup and later repair:
 
 - Developer mode: https://chatgpt.com/#settings/Security
 - Plugins hub (manage existing connectors): https://chatgpt.com/plugins
 - Add a connector:
   https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins
+
+Prefer the plugin-hub Add → Create custom MCP server capability and verify that
+the creation form is actually usable. The deep Add URL above is only a bounded
+fallback observation; if it lands on an installed list, classify route drift
+and rediscover the semantic capability instead of declaring global
+unavailability. The active account/workspace policy, not the historical
+Security-page location, decides whether a Developer/custom-app gate exists.
+
+Project display names are limited to 50 characters on the observed creation
+surface. Validate or deterministically normalize generated labels before
+submission; keep the durable workstream and connector identity separate from
+the label and reconcile by verified binding rather than display-name similarity.
 
 ### Tunnel URL unreachable / ChatGPT says the connector is broken
 Same as above: `c2c doctor`, then Delete + recreate THIS workspace's
