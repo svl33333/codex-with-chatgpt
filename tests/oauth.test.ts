@@ -42,7 +42,8 @@ async function authorizeWithPairing(
   clientId: string,
   challenge: string,
   pairingCode: string,
-  state = "st-123"
+  state = "st-123",
+  scope: string | null = "workspace.read workspace.search git.read execution.read offline_access"
 ): Promise<{ code: string | null; location: string | null; page?: string; status?: number }> {
   const authorizeUrl = new URL(`${base}/oauth/authorize`);
   authorizeUrl.searchParams.set("client_id", clientId);
@@ -51,7 +52,7 @@ async function authorizeWithPairing(
   authorizeUrl.searchParams.set("state", state);
   authorizeUrl.searchParams.set("code_challenge", challenge);
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  authorizeUrl.searchParams.set("scope", "workspace.read workspace.search git.read execution.read offline_access");
+  if (scope !== null) authorizeUrl.searchParams.set("scope", scope);
 
   const pageResponse = await fetch(authorizeUrl, { redirect: "manual" });
   const html = await pageResponse.text();
@@ -123,6 +124,8 @@ describe("authorization + token flow", () => {
     expect(token.body.access_token).toMatch(/^c2c_at_/);
     expect(token.body.refresh_token).toMatch(/^c2c_rt_/);
     expect(token.body.token_type).toBe("Bearer");
+    expect(bridge.authStore.verifyAccessToken(token.body.access_token, `${base}/mcp`).ok).toBe(true);
+    expect(bridge.authStore.verifyAccessToken(token.body.access_token, "https://wrong.example/mcp").ok).toBe(false);
 
     // authorized MCP request
     const mcpResponse = await fetch(`${base}/mcp`, {
@@ -140,6 +143,49 @@ describe("authorization + token flow", () => {
       }),
     });
     expect(mcpResponse.status).toBe(200);
+  });
+
+  it("rejects an explicitly unsupported scope instead of expanding it", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("state", "scope-state");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "workspace.read write.access");
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("error=invalid_scope");
+  });
+
+  it("rejects a resource target that is not this MCP server", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("state", "resource-state");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("resource", "https://wrong.example/mcp");
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("error=invalid_target");
+  });
+
+  it("does not implicitly grant offline access when scope is omitted", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const pairing = bridge.pairing.create();
+    const { code } = await authorizeWithPairing(clientId, challenge, pairing.code, "no-offline", null);
+    const token = await exchangeToken(clientId, code!, verifier);
+    expect(token.status).toBe(200);
+    expect(token.body.scope).not.toContain("offline_access");
+    expect(token.body.refresh_token).toBeUndefined();
   });
 
   it("rejects a wrong pairing code", async () => {
@@ -283,9 +329,15 @@ describe("token enforcement on /mcp", () => {
       clientId: "test",
       scopes: ["workspace.read"],
       accessTtlMs: -1000,
+      resource: `${base}/mcp`,
     });
     const response = await mcpCall(expired.accessToken);
     expect(response.status).toBe(401);
+  });
+
+  it("401 for a legacy token without an audience/resource binding", async () => {
+    const legacy = bridge.authStore.issueTokens({ clientId: "legacy", scopes: ["workspace.read"] });
+    expect((await mcpCall(legacy.accessToken)).status).toBe(401);
   });
 
   it("403 with a token bound to another workspace", async () => {
@@ -293,13 +345,14 @@ describe("token enforcement on /mcp", () => {
       clientId: "test",
       scopes: ["workspace.read"],
       workspaceId: "deadbeef0000",
+      resource: `${base}/mcp`,
     });
     const response = await mcpCall(foreign.accessToken);
     expect(response.status).toBe(403);
   });
 
   it("401 after revocation", async () => {
-    const tokens = bridge.authStore.issueTokens({ clientId: "test", scopes: ["workspace.read"] });
+    const tokens = bridge.authStore.issueTokens({ clientId: "test", scopes: ["workspace.read"], resource: `${base}/mcp` });
     expect((await mcpCall(tokens.accessToken)).status).toBe(200);
     bridge.authStore.revokeToken(tokens.accessToken);
     expect((await mcpCall(tokens.accessToken)).status).toBe(401);
@@ -329,5 +382,20 @@ describe("refresh token rotation", () => {
 
     const replayed = await refresh(initial.body.refresh_token);
     expect(replayed.status).toBe(400);
+  });
+
+  it("rejects a legacy unbound refresh token and requires reauthorization", async () => {
+    const legacy = bridge.authStore.issueTokens({ clientId: "legacy-refresh", scopes: ["workspace.read", "offline_access"] });
+    const response = await fetch(`${base}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: legacy.refreshToken!,
+        client_id: "legacy-refresh",
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("invalid_grant");
   });
 });

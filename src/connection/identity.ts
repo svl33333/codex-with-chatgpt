@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { runGit } from "../workspace/git.js";
+import type { ChatGPTSurfaceId } from "../provisioning/chatgpt-surface.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
 
@@ -12,7 +13,7 @@ export interface InstallationIdentity {
 }
 
 export interface ConnectionBinding {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   workspaceId: string;
   workspace: string;
   canonicalRepository: string;
@@ -21,6 +22,14 @@ export interface ConnectionBinding {
   endpointFingerprint: string;
   connectorName: string;
   projectId?: string;
+  projectName?: string;
+  reviewerBinding?: string;
+  accountFingerprint?: string;
+  selectedSurface?: ChatGPTSurfaceId;
+  readOnlyRequired?: boolean;
+  readOnlyProof?: "verified" | "unverified";
+  workspaceVerification?: "verified" | "unverified";
+  identitySource?: "connector_record" | "surface_observation";
   updatedAt: string;
 }
 
@@ -94,10 +103,10 @@ export function bindingFile(workspaceId: string): string {
 
 export function readConnectionBinding(workspaceId: string): ConnectionBinding | null {
   const binding = readJsonIfExists<ConnectionBinding>(bindingFile(workspaceId));
-  if (!binding || binding.schemaVersion !== 1) return null;
+  if (!binding || (binding.schemaVersion !== 1 && binding.schemaVersion !== 2)) return null;
   if (!binding.workspaceId || !binding.workspace || !binding.canonicalRepository || !binding.installationId) return null;
   if (!binding.endpointFingerprint || !binding.connectorName) return null;
-  return binding;
+  return { ...binding, schemaVersion: 2 };
 }
 
 export function writeConnectionBinding(binding: ConnectionBinding): ConnectionBinding {
@@ -113,12 +122,20 @@ export function makeConnectionBinding(input: {
   endpointMode?: EndpointMode;
   connectorName?: string | null;
   projectId?: string | null;
+  projectName?: string | null;
+  reviewerBinding?: string | null;
+  accountFingerprint?: string | null;
+  selectedSurface?: ChatGPTSurfaceId;
+  readOnlyRequired?: boolean;
+  readOnlyProof?: "verified" | "unverified";
+  workspaceVerification?: "verified" | "unverified";
+  identitySource?: "connector_record" | "surface_observation";
 }): ConnectionBinding {
   const installation = getInstallationIdentity();
   const endpointMode = input.endpointMode ?? "ephemeral";
   const previous = readConnectionBinding(input.workspaceId);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: input.workspaceId,
     workspace: input.workspace,
     canonicalRepository: canonicalRepositoryFor(input.workspaceRoot),
@@ -130,6 +147,18 @@ export function makeConnectionBinding(input: {
       installation.installationId,
       input.connectorName ?? previous?.connectorName
     ),
+    ...((input.projectName ?? previous?.projectName) ? { projectName: input.projectName ?? previous?.projectName } : {}),
+    ...((input.reviewerBinding ?? previous?.reviewerBinding) ? { reviewerBinding: input.reviewerBinding ?? previous?.reviewerBinding } : {}),
+    ...((input.accountFingerprint ?? previous?.accountFingerprint) ? { accountFingerprint: input.accountFingerprint ?? previous?.accountFingerprint } : {}),
+    ...((input.selectedSurface ?? previous?.selectedSurface) ? { selectedSurface: input.selectedSurface ?? previous?.selectedSurface } : {}),
+    ...((input.readOnlyRequired ?? previous?.readOnlyRequired) !== undefined
+      ? { readOnlyRequired: input.readOnlyRequired ?? previous?.readOnlyRequired }
+      : {}),
+    ...((input.readOnlyProof ?? previous?.readOnlyProof) ? { readOnlyProof: input.readOnlyProof ?? previous?.readOnlyProof } : {}),
+    ...((input.workspaceVerification ?? previous?.workspaceVerification)
+      ? { workspaceVerification: input.workspaceVerification ?? previous?.workspaceVerification }
+      : {}),
+    ...((input.identitySource ?? previous?.identitySource) ? { identitySource: input.identitySource ?? previous?.identitySource } : {}),
     ...(input.projectId ?? previous?.projectId ? { projectId: input.projectId ?? previous?.projectId } : {}),
     updatedAt: new Date().toISOString(),
   };

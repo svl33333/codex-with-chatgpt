@@ -40,10 +40,12 @@ import {
   CHATGPT_CREATE_CONNECTOR_URL,
   CHATGPT_DEVELOPER_MODE_URL,
   CHATGPT_PLUGINS_URL,
+  CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
   connectorAction,
   connectorNameFor,
   mcpUrlFromPublic,
   normalizePublicUrl,
+  projectDisplayNameForWorkspace,
   readLastEndpoint,
   reclaimUserMessage,
   writeLastEndpoint,
@@ -75,10 +77,23 @@ import {
 } from "../connection/identity.js";
 import {
   PROVISIONING_PHASES,
+  PROVISIONING_OUTCOMES,
+  PROVISIONING_SURFACE_IDS,
+  hasProvisioningReadinessProof,
   readProvisioningState,
   writeProvisioningState,
   type ProvisioningPhase,
+  type ProvisioningOutcome,
 } from "../provisioning/state.js";
+import {
+  isAppSelectionVerified,
+  readAppSelection,
+  recordAppSelection,
+  type AppInvocationState,
+  type AppSelectionMethod,
+  type AppSelectionRecord,
+} from "../conversation/app-selection.js";
+import { selectSupportedSurface, type SurfaceObservation } from "../provisioning/chatgpt-surface.js";
 
 const program = new Command();
 
@@ -114,6 +129,22 @@ function parseProvisioningPhase(value: string): ProvisioningPhase {
     throw new InvalidArgumentError(`phase must be one of ${PROVISIONING_PHASES.join(", ")}`);
   }
   return phase;
+}
+
+function parseProvisioningSurface(value: string): (typeof PROVISIONING_SURFACE_IDS)[number] {
+  const surface = value.trim() as (typeof PROVISIONING_SURFACE_IDS)[number];
+  if (!PROVISIONING_SURFACE_IDS.includes(surface)) {
+    throw new InvalidArgumentError(`surface must be one of ${PROVISIONING_SURFACE_IDS.join(", ")}`);
+  }
+  return surface;
+}
+
+function parseProvisioningOutcome(value: string): ProvisioningOutcome {
+  const outcome = value.trim().toUpperCase() as ProvisioningOutcome;
+  if (!PROVISIONING_OUTCOMES.includes(outcome as (typeof PROVISIONING_OUTCOMES)[number])) {
+    throw new InvalidArgumentError(`outcome must be one of ${PROVISIONING_OUTCOMES.join(", ")}`);
+  }
+  return outcome;
 }
 
 function parseChangedFiles(value: string): string[] | number {
@@ -564,6 +595,13 @@ program
     const root = resolveWorkspace(opts.workspace);
     const report: Record<string, { ok: boolean; detail?: string }> = {};
     const results: string[] = [];
+    const surface = {
+      preferredRoute: "plugin-hub-custom-mcp",
+      fallbackRoutes: ["settings-custom-app", "authenticated-browser-profile"],
+      routePolicy: "semantic-capability",
+      developerModePolicy: "account-workspace-observation",
+      projectDisplayNameMaxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
+    };
 
     // Node
     const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
@@ -649,6 +687,9 @@ program
           installationId: getInstallationIdentity().installationId,
         })
       : "Codex with ChatGPT";
+    const projectDisplayName = workspace
+      ? projectDisplayNameForWorkspace(workspace.name, { workspaceId: workspace.id })
+      : null;
     const tunnelState = workspace ? readTunnelState(workspace.id) : null;
     const namedReady = tunnelState ? isNamedTunnelReady(tunnelState) : false;
     let namedRepair: { needed: boolean; userMessage?: string } = { needed: false };
@@ -801,7 +842,8 @@ program
         report.workspace?.ok === true && report.bridge?.ok === true && report.mcp?.ok === true && report.tunnel?.ok === true;
       const retainedVerifiedPhase =
         previousProvisioning &&
-        ["connector_ready", "project_binding", "workspace_verification", "ready"].includes(previousProvisioning.phase)
+        ["connector_ready", "project_binding", "workspace_verification", "ready"].includes(previousProvisioning.phase) &&
+        (previousProvisioning.phase !== "ready" || hasProvisioningReadinessProof(previousProvisioning))
           ? previousProvisioning.phase
           : null;
       const phase: ProvisioningPhase = !localHealthy
@@ -821,12 +863,20 @@ program
         repairs: results,
         chatgptRepair,
         namedRepair,
+        surface,
+        project: {
+          displayName: projectDisplayName,
+          displayNameMaxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
+        },
         provisioning: workspace ? readProvisioningState(workspace.id) : null,
       }));
       return;
     }
     say(`${PRODUCT_NAME} Doctor`);
     say("");
+    say(`· ChatGPT surface：${surface.preferredRoute}（fallback ${surface.fallbackRoutes.join(", ")}）`);
+    say(`· Project表示名上限：${surface.projectDisplayNameMaxLength}文字`);
+    if (projectDisplayName) say(`· 推奨Project表示名：${projectDisplayName}`);
     const labels: Record<string, string> = {
       node: "Node.js",
       sandbox: "Sandbox",
@@ -940,10 +990,18 @@ program
   .action((opts: { workspace?: string; json: boolean }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
     const project = workspace.detectProject();
-    const data = { workspaceId: workspace.id, name: workspace.name, root: workspace.root, ...project };
+    const data = {
+      workspaceId: workspace.id,
+      name: workspace.name,
+      root: workspace.root,
+      projectDisplayName: projectDisplayNameForWorkspace(workspace.name, { workspaceId: workspace.id }),
+      projectDisplayNameMaxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
+      ...project,
+    };
     if (opts.json) say(JSON.stringify(data));
     else {
       say(`Workspace：${data.name}（${data.workspaceId}）`);
+      say(`ChatGPT Project表示名：${data.projectDisplayName}`);
       say(`種類：${data.projectType}  言語：${data.languages.join(", ") || "-"}`);
       say(`パス：${data.root}`);
     }
@@ -1247,15 +1305,167 @@ provisioning
   .requiredOption("--phase <phase>", `one of ${PROVISIONING_PHASES.join(", ")}`)
   .option("--reason <text>")
   .option("--retry-count <n>")
+  .option("--surface <surface>", `selected semantic surface (${PROVISIONING_SURFACE_IDS.join(", ")})`)
+  .option("--outcome <outcome>", `compatibility outcome (${PROVISIONING_OUTCOMES.join(", ")})`)
+  .option("--next-action <text>")
+  .option("--account-verified", "record verified account evidence", false)
+  .option("--read-only-verified", "record verified read-only evidence", false)
+  .option("--oauth-contract-verified", "record verified OAuth contract evidence", false)
+  .option("--project-verified", "record verified Project evidence", false)
+  .option("--message-selection-verified", "record verified current-message app selection", false)
+  .option("--selection-task <id>", "task id for the verified current-message app selection")
+  .option("--selection-iteration <n>", "iteration for the verified current-message app selection", parseNonNegativeInteger)
+  .option("--selection-message-id <id>", "message id for the verified current-message app selection")
+  .option("--workspace-info-hash <hash>")
+  .option("--git-status-hash <hash>")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; phase: string; reason?: string; retryCount?: string; json: boolean }) => {
+  .action((opts: {
+    workspace?: string;
+    phase: string;
+    reason?: string;
+    retryCount?: string;
+    surface?: string;
+    outcome?: string;
+    nextAction?: string;
+    accountVerified: boolean;
+    readOnlyVerified: boolean;
+    oauthContractVerified: boolean;
+    projectVerified: boolean;
+    messageSelectionVerified: boolean;
+    selectionTask?: string;
+    selectionIteration?: number;
+    selectionMessageId?: string;
+    workspaceInfoHash?: string;
+    gitStatusHash?: string;
+    json: boolean;
+  }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const state = writeProvisioningState(workspace.id, parseProvisioningPhase(opts.phase), {
+    const phase = parseProvisioningPhase(opts.phase);
+    const patch = {
       reason: opts.reason,
       retryCount: opts.retryCount === undefined ? undefined : parseNonNegativeInteger(opts.retryCount),
-    });
+      selectedSurface: opts.surface === undefined ? undefined : parseProvisioningSurface(opts.surface),
+      outcome: opts.outcome === undefined ? undefined : parseProvisioningOutcome(opts.outcome),
+      nextAction: opts.nextAction,
+      accountVerified: opts.accountVerified ? true : undefined,
+      readOnlyVerified: opts.readOnlyVerified ? true : undefined,
+      oauthContractVerified: opts.oauthContractVerified ? true : undefined,
+      projectVerified: opts.projectVerified ? true : undefined,
+      messageSelectionVerified: opts.messageSelectionVerified ? true : undefined,
+      workspaceInfoHash: opts.workspaceInfoHash,
+      gitStatusHash: opts.gitStatusHash,
+    };
+    let messageSelectionKey: string | undefined;
+    if (opts.messageSelectionVerified) {
+      if (opts.selectionTask === undefined || opts.selectionIteration === undefined || opts.selectionMessageId === undefined) {
+        throw new Error("message-selection-verified requires selection task, iteration, and message id");
+      }
+      const selection = readAppSelection(workspace.id, {
+        taskId: opts.selectionTask,
+        iteration: opts.selectionIteration,
+        messageId: opts.selectionMessageId,
+      });
+      if (!isAppSelectionVerified(selection)) {
+        throw new Error("message-selection-verified requires a successful current-message app selection record");
+      }
+      messageSelectionKey = selection?.messageKey;
+    }
+    const patchWithSelection = { ...patch, messageSelectionKey };
+    if (phase === "ready" && patch.selectedSurface) {
+      const observedSurface: SurfaceObservation = {
+        surface: patch.selectedSurface,
+        routePreference: 0,
+        originStatus: "verified",
+        accountStatus: "available",
+        workspaceStatus: "available",
+        capabilities: { select_app: "available", verify_project: "available", verify_account: "available" },
+        policyStatus: "available",
+        browserStatus: "available",
+      };
+      const selection = selectSupportedSurface([observedSurface], "select_app");
+      if (!selection.selected) throw new Error(selection.reason ?? "selected ChatGPT surface could not be verified");
+    }
+    if (phase === "ready" && !hasProvisioningReadinessProof({
+      selectedSurface: patch.selectedSurface,
+      outcome: patch.outcome,
+      accountVerified: patch.accountVerified,
+      readOnlyVerified: patch.readOnlyVerified,
+      oauthContractVerified: patch.oauthContractVerified,
+      projectVerified: patch.projectVerified,
+      messageSelectionVerified: patch.messageSelectionVerified,
+      messageSelectionKey,
+    })) {
+      throw new Error("ready requires selected surface, compatibility outcome, and complete live verification proof");
+    }
+    const state = writeProvisioningState(workspace.id, phase, patchWithSelection);
     if (opts.json) say(JSON.stringify({ ok: true, workspaceId: workspace.id, state }));
     else check(`セットアップ状態を記録しました（${state.phase}）`);
+  });
+
+// ---------------------------------------------------------------- current-message app selection
+
+const appSelection = program
+  .command("app-selection")
+  .description("Persist the exact app selected for one MCP-dependent message");
+
+appSelection
+  .command("record")
+  .description("Record current-message app selection evidence keyed by delivery identity")
+  .option("-w, --workspace <path>")
+  .requiredOption("--task <id>")
+  .requiredOption("--iteration <n>", "non-negative task iteration", parseNonNegativeInteger)
+  .requiredOption("--message-id <id>")
+  .requiredOption("--target-workstream <identity>")
+  .requiredOption("--connector-name <name>")
+  .option("--project-binding <binding>")
+  .option("--reviewer-binding <binding>")
+  .requiredOption("--requested-app <name>")
+  .requiredOption("--selection-method <method>", "mention, composer, or product_equivalent")
+  .requiredOption("--invocation <state>", "pending, succeeded, or failed")
+  .option("--current-message-available", "the selected app is available on this message", false)
+  .option("--workspace-verified", "workspace_info matched the target workspace", false)
+  .option("--failure <reason>", "app_unavailable, workspace_mismatch, read_only_mismatch, or unknown")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    workspace?: string;
+    task: string;
+    iteration: number;
+    messageId: string;
+    targetWorkstream: string;
+    connectorName: string;
+    projectBinding?: string;
+    reviewerBinding?: string;
+    requestedApp: string;
+    selectionMethod: string;
+    invocation: string;
+    currentMessageAvailable: boolean;
+    workspaceVerified: boolean;
+    failure?: string;
+    json: boolean;
+  }) => {
+    const methods = ["mention", "composer", "product_equivalent"] as const;
+    const invocations = ["pending", "succeeded", "failed"] as const;
+    const failures = ["app_unavailable", "workspace_mismatch", "read_only_mismatch", "unknown"] as const;
+    if (!methods.includes(opts.selectionMethod as (typeof methods)[number])) throw new Error("invalid selection method");
+    if (!invocations.includes(opts.invocation as (typeof invocations)[number])) throw new Error("invalid invocation state");
+    if (opts.failure && !failures.includes(opts.failure as (typeof failures)[number])) throw new Error("invalid selection failure");
+    const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    const record = recordAppSelection({
+      workspaceId: workspace.id,
+      targetWorkstream: opts.targetWorkstream,
+      projectBinding: opts.projectBinding,
+      reviewerBinding: opts.reviewerBinding,
+      connectorName: opts.connectorName,
+      intent: { taskId: opts.task, iteration: opts.iteration, messageId: opts.messageId },
+      requestedApp: opts.requestedApp,
+      selectionMethod: opts.selectionMethod as AppSelectionMethod,
+      currentMessageAvailable: opts.currentMessageAvailable,
+      invocation: opts.invocation as AppInvocationState,
+      workspaceVerified: opts.workspaceVerified,
+      failure: opts.failure as AppSelectionRecord["failure"],
+    });
+    if (opts.json) say(JSON.stringify({ ok: true, record }));
+    else check(`現在のメッセージのアプリ選択を記録しました（${record.messageKey}）`);
   });
 
 const prefsCmd = program

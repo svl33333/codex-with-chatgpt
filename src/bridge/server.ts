@@ -101,8 +101,16 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const getBaseUrl = (req: Request): string => {
     if (publicBaseUrl) return publicBaseUrl;
     const proto = req.protocol;
-    const hostHeader = req.get("host") ?? `${host}:${port}`;
-    return `${proto}://${hostHeader}`;
+    const requestHost = req.get("host") ?? "";
+    let safeHost = `${host}:${port}`;
+    try {
+      const parsed = new URL(`${proto}://${requestHost}`);
+      const allowedHost = parsed.hostname === host || parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+      if (allowedHost && parsed.port === String(port)) safeHost = requestHost;
+    } catch {
+      // Use the loopback listener when a forwarded or malformed Host is supplied.
+    }
+    return `${proto}://${safeHost}`;
   };
 
   // ---- Health (public but minimal) ---------------------------------------
@@ -119,6 +127,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       pairing,
       workspaceName: workspace.name,
       getBaseUrl,
+      canonicalBaseUrl: () => publicBaseUrl,
       logger,
     })
   );
@@ -129,7 +138,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),
-    bearerAuth({ store: authStore, workspaceId: workspace.id, getBaseUrl, logger }),
+    bearerAuth({ store: authStore, workspaceId: workspace.id, getBaseUrl, canonicalBaseUrl: () => publicBaseUrl, logger }),
     (req: Request, res: Response) => {
       void mcpHandler(req, res);
     }

@@ -4,6 +4,7 @@ import {
   reconcileConnection,
   type ConnectionAdapter,
   type ConnectorRecord,
+  type ConnectorVerification,
 } from "../src/connection/reconciler.js";
 import {
   canonicalRepositoryFor,
@@ -47,6 +48,7 @@ class FakeConnectors implements ConnectionAdapter {
   listAvailable = true;
   listFailuresRemaining = 0;
   workspaceInfoFailuresRemaining = 0;
+  verification: Partial<ConnectorVerification> = {};
 
   async listConnectors(): Promise<ConnectorRecord[]> {
     if (!this.listAvailable) throw new Error("list unavailable");
@@ -84,7 +86,12 @@ class FakeConnectors implements ConnectionAdapter {
       this.workspaceInfoFailuresRemaining -= 1;
       throw new Error("transient workspace_info failure");
     }
-    return { workspace: connector.workspace, repository: connector.repository, ok: true };
+    return {
+      workspace: connector.workspace,
+      repository: connector.repository,
+      ok: true,
+      ...this.verification,
+    };
   }
 }
 
@@ -166,6 +173,79 @@ describe("connection identity and connector reconciliation", () => {
     const result = await reconcileConnection(b, adapter);
     expect(result.status).toBe("READY");
     expect(result.phase).toBe("REUSE");
+  });
+
+  it("waits when account proof is missing and blocks on an account mismatch", async () => {
+    const b = binding({ accountFingerprint: "account-a" });
+    const adapter = new FakeConnectors();
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    expect((await reconcileConnection(b, adapter)).status).toBe("CONNECTION_WAITING");
+    adapter.verification = { accountFingerprint: "account-b" };
+    expect((await reconcileConnection(b, adapter)).status).toBe("BLOCKED");
+  });
+
+  it("waits when Project proof is missing and blocks on a Project mismatch", async () => {
+    const b = binding({ projectId: "project-a" });
+    const adapter = new FakeConnectors();
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    expect((await reconcileConnection(b, adapter)).status).toBe("CONNECTION_WAITING");
+    adapter.verification = { projectBinding: "project-b" };
+    expect((await reconcileConnection(b, adapter)).status).toBe("BLOCKED");
+  });
+
+  it("waits for read-only proof, blocks non-read-only connectors, and reuses exact proof", async () => {
+    const b = binding({ readOnlyRequired: true });
+    const adapter = new FakeConnectors();
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    expect((await reconcileConnection(b, adapter)).status).toBe("CONNECTION_WAITING");
+    adapter.verification = { readOnly: false };
+    expect((await reconcileConnection(b, adapter)).status).toBe("BLOCKED");
+    adapter.verification = { readOnly: true };
+    const result = await reconcileConnection(b, adapter);
+    expect(result.status).toBe("READY");
+    expect(result.mutations).toEqual({ create: 0, delete: 0 });
+  });
+
+  it("reuses a connector only when all configured account, Project, and read-only proofs match", async () => {
+    const b = binding({ accountFingerprint: "account-a", projectId: "project-a", readOnlyRequired: true });
+    const adapter = new FakeConnectors();
+    adapter.verification = { accountFingerprint: "account-a", projectBinding: "project-a", readOnly: true };
+    adapter.connectors = [{
+      id: "existing",
+      name: b.connectorName,
+      workspace: b.workspace,
+      repository: b.canonicalRepository,
+      installationId: b.installationId,
+      endpointMode: b.endpointMode,
+      endpointFingerprint: b.endpointFingerprint,
+    }];
+    const result = await reconcileConnection(b, adapter);
+    expect(result.status).toBe("READY");
+    expect(result.mutations).toEqual({ create: 0, delete: 0 });
   });
 
   it("creates and verifies a missing connector exactly once", async () => {

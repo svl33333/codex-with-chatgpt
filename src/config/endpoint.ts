@@ -1,13 +1,107 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "./paths.js";
 import { connectorNameForInstallation, endpointFingerprint, type EndpointMode } from "../connection/identity.js";
+import { createHash } from "node:crypto";
 
 export const CHATGPT_DEVELOPER_MODE_URL = "https://chatgpt.com/#settings/Security";
 export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
 export const CHATGPT_CREATE_CONNECTOR_URL =
   "https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins";
+export const CHATGPT_PROJECT_DISPLAY_NAME_LIMIT = 50;
+export const APPROVED_A0_PROJECT_DISPLAY_NAME = "codex-with-chatgpt-a0-surface-compatibility";
 
 export const DEFAULT_CONNECTOR_NAME = "Codex with ChatGPT";
+
+export interface ProjectDisplayNameContext {
+  durableWorkstreamIdentity?: string;
+  workspaceId?: string;
+  connectorName?: string;
+}
+
+export interface ProjectDisplayNameValidation {
+  isValid: boolean;
+  length: number;
+  maxLength: number;
+  reason?: "empty" | "too_long";
+}
+
+/** Recover the durable workstream identity from the conventional workspace label. */
+export function workstreamIdentityFromWorkspaceName(workspaceName: string): string {
+  const trimmed = workspaceName.trim();
+  const prefix = "codex-with-chatgpt-";
+  return trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+}
+
+function displayNameLength(value: string): number {
+  return Array.from(value).length;
+}
+
+/** Validate the bounded display-name field without treating it as identity proof. */
+export function validateProjectDisplayName(name: string): ProjectDisplayNameValidation {
+  const trimmed = name.trim();
+  const length = displayNameLength(trimmed);
+  if (length === 0) return { isValid: false, length, maxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT, reason: "empty" };
+  if (length > CHATGPT_PROJECT_DISPLAY_NAME_LIMIT) {
+    return { isValid: false, length, maxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT, reason: "too_long" };
+  }
+  return { isValid: true, length, maxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT };
+}
+
+function normalizationSuffix(context: ProjectDisplayNameContext): string {
+  const identity = context.durableWorkstreamIdentity ?? "display-name";
+  const workspace = context.workspaceId ?? "";
+  // The durable workstream identity plus workspace id is the canonical input
+  // for every production payload. Connector labels are mutable presentation
+  // data, so including them would make doctor/workspace disagree for the same
+  // workspace after an identity-preserving connector repair.
+  return `-${createHash("sha256").update(`${identity}\0${workspace}`).digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * Normalize a generated Project label before submission while retaining the
+ * durable workstream identity separately. The known A0 label keeps its
+ * approved compact form; other overlong labels receive a deterministic
+ * identity-derived suffix so different workstreams do not collapse silently.
+ */
+export function normalizeProjectDisplayName(
+  requestedName: string,
+  context: ProjectDisplayNameContext = {}
+): string {
+  const trimmed = requestedName.trim();
+  if (validateProjectDisplayName(trimmed).isValid) return trimmed;
+  if (!trimmed) throw new Error("Project display name must not be empty");
+
+  if (
+    trimmed === "codex-with-chatgpt-a0-chatgpt-surface-compatibility" &&
+    context.durableWorkstreamIdentity === "a0-chatgpt-surface-compatibility"
+  ) {
+    return APPROVED_A0_PROJECT_DISPLAY_NAME;
+  }
+
+  const suffix = normalizationSuffix(context);
+  const available = CHATGPT_PROJECT_DISPLAY_NAME_LIMIT - displayNameLength(suffix);
+  const prefix = Array.from(trimmed).slice(0, Math.max(1, available)).join("").replace(/[\s-]+$/u, "");
+  return `${prefix}${suffix}`.slice(0, CHATGPT_PROJECT_DISPLAY_NAME_LIMIT);
+}
+
+/** Build the stable generated label used by the ChatGPT Project provisioning layer. */
+export function projectDisplayNameForWorkstream(
+  workstreamIdentity: string,
+  context: Omit<ProjectDisplayNameContext, "durableWorkstreamIdentity"> = {}
+): string {
+  return normalizeProjectDisplayName(`codex-with-chatgpt-${workstreamIdentity}`, {
+    ...context,
+    durableWorkstreamIdentity: workstreamIdentity,
+  });
+}
+
+/** Build the bounded Project label exposed by the workspace/setup payload. */
+export function projectDisplayNameForWorkspace(
+  workspaceName: string,
+  context: Omit<ProjectDisplayNameContext, "durableWorkstreamIdentity"> = {}
+): string {
+  return projectDisplayNameForWorkstream(workstreamIdentityFromWorkspaceName(workspaceName), context);
+}
 
 export interface LastEndpoint {
   workspaceId: string;

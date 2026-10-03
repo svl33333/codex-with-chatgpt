@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import type { ConnectionBinding } from "./identity.js";
+import { classifyConnectionOutcome, type SurfaceOutcome } from "../provisioning/chatgpt-surface.js";
 
 export type ReconcileStatus = "READY" | "CONNECTION_WAITING" | "BLOCKED";
 export type ReconcilePhase =
@@ -21,17 +22,28 @@ export interface ConnectorRecord {
   installationId: string;
   endpointMode: ConnectionBinding["endpointMode"];
   endpointFingerprint: string;
+  accountFingerprint?: string;
+  selectedSurface?: string;
+  projectBinding?: string;
+  readOnly?: boolean;
+}
+
+export interface ConnectorVerification {
+  workspace: string;
+  repository: string;
+  ok: boolean;
+  accountFingerprint?: string;
+  projectBinding?: string;
+  readOnly?: boolean;
+  selectedSurface?: string;
+  messageSelectionVerified?: boolean;
 }
 
 export interface ConnectionAdapter {
   listConnectors(): Promise<ConnectorRecord[]>;
   createConnector(binding: ConnectionBinding): Promise<ConnectorRecord>;
   deleteConnector(connectorId: string): Promise<void>;
-  workspaceInfo(connector: ConnectorRecord): Promise<{
-    workspace: string;
-    repository: string;
-    ok: boolean;
-  }>;
+  workspaceInfo(connector: ConnectorRecord): Promise<ConnectorVerification>;
 }
 
 export interface ReconcileCheckpoint {
@@ -59,6 +71,7 @@ export interface ReconcileOutcome {
   operationKey: string;
   connector?: ConnectorRecord;
   reason?: string;
+  compatibilityOutcome: SurfaceOutcome;
   mutations: { create: number; delete: number };
   checkpoint: ReconcileCheckpoint;
 }
@@ -143,11 +156,61 @@ function waiting(
 ): ReconcileOutcome {
   checkpoint.phase = checkpoint.phase === "VERIFY_ABSENT" ? "VERIFY_ABSENT" : "PREFLIGHT";
   saveCheckpoint(checkpoint);
+  const classified = classifyConnectionOutcome("CONNECTION_WAITING", mutations, reason);
   return {
     status: "CONNECTION_WAITING",
     phase: checkpoint.phase,
     operationKey: checkpoint.operationKey,
     reason,
+    compatibilityOutcome: classified.outcome,
+    mutations,
+    checkpoint,
+  };
+}
+
+type VerificationDecision =
+  | { kind: "valid" }
+  | { kind: "waiting"; reason: string }
+  | { kind: "blocked"; reason: string };
+
+function validateConnectorVerification(
+  binding: ConnectionBinding,
+  info: ConnectorVerification
+): VerificationDecision {
+  if (!info.ok) return { kind: "waiting", reason: "workspace_info rejected the connector" };
+  if (info.workspace !== binding.workspace || info.repository !== binding.canonicalRepository) {
+    return { kind: "blocked", reason: "workspace or repository mismatch" };
+  }
+  if (binding.accountFingerprint) {
+    if (!info.accountFingerprint) return { kind: "waiting", reason: "account proof unavailable" };
+    if (info.accountFingerprint !== binding.accountFingerprint) {
+      return { kind: "blocked", reason: "account proof mismatch" };
+    }
+  }
+  if (binding.projectId) {
+    if (!info.projectBinding) return { kind: "waiting", reason: "project binding proof unavailable" };
+    if (info.projectBinding !== binding.projectId) return { kind: "blocked", reason: "project binding mismatch" };
+  }
+  if (binding.readOnlyRequired) {
+    if (info.readOnly === undefined) return { kind: "waiting", reason: "read-only proof unavailable" };
+    if (!info.readOnly) return { kind: "blocked", reason: "connector is not read-only" };
+  }
+  return { kind: "valid" };
+}
+
+function blockedOutcome(
+  checkpoint: ReconcileCheckpoint,
+  operationKey: string,
+  reason: string,
+  mutations: { create: number; delete: number }
+): ReconcileOutcome {
+  const classified = classifyConnectionOutcome("BLOCKED", mutations, reason);
+  return {
+    status: "BLOCKED",
+    phase: checkpoint.phase,
+    operationKey,
+    reason,
+    compatibilityOutcome: classified.outcome,
     mutations,
     checkpoint,
   };
@@ -193,20 +256,20 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
       return waiting(checkpoint, "workspace_info unavailable", mutations);
     }
     info = verified;
-    if (!info.ok) return waiting(checkpoint, "workspace_info rejected the connector", mutations);
-    if (info.workspace !== binding.workspace || info.repository !== binding.canonicalRepository) {
-      return {
-        status: "BLOCKED",
-        phase: "VERIFY",
-        operationKey,
-        reason: "workspace or repository mismatch",
-        mutations,
-        checkpoint,
-      };
-    }
+    const decision = validateConnectorVerification(binding, info);
+    if (decision.kind === "waiting") return waiting(checkpoint, decision.reason, mutations);
+    if (decision.kind === "blocked") return blockedOutcome(checkpoint, operationKey, decision.reason, mutations);
     checkpoint.phase = "REUSE";
     saveCheckpoint(checkpoint);
-    return { status: "READY", phase: "REUSE", operationKey, connector: exact[0], mutations, checkpoint };
+    return {
+      status: "READY",
+      phase: "REUSE",
+      operationKey,
+      connector: exact[0],
+      compatibilityOutcome: classifyConnectionOutcome("READY", mutations).outcome,
+      mutations,
+      checkpoint,
+    };
   }
 
   // Only an owned connector with a changed endpoint may be deleted.
@@ -259,20 +322,21 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     checkpoint.phase = "VERIFY";
     saveCheckpoint(checkpoint);
     const info = await readWithRetry(() => adapter.workspaceInfo(created));
-    if (!info || !info.ok) return waiting(checkpoint, "created connector could not be verified", mutations);
-    if (info.workspace !== binding.workspace || info.repository !== binding.canonicalRepository) {
-      return {
-        status: "BLOCKED",
-        phase: "VERIFY",
-        operationKey,
-        reason: "created connector workspace or repository mismatch",
-        mutations,
-        checkpoint,
-      };
-    }
+    if (!info) return waiting(checkpoint, "created connector could not be verified", mutations);
+    const decision = validateConnectorVerification(binding, info);
+    if (decision.kind === "waiting") return waiting(checkpoint, decision.reason, mutations);
+    if (decision.kind === "blocked") return blockedOutcome(checkpoint, operationKey, decision.reason, mutations);
     checkpoint.phase = "REUSE";
     saveCheckpoint(checkpoint);
-    return { status: "READY", phase: "REUSE", operationKey, connector: created, mutations, checkpoint };
+    return {
+      status: "READY",
+      phase: "REUSE",
+      operationKey,
+      connector: created,
+      compatibilityOutcome: classifyConnectionOutcome("READY", mutations).outcome,
+      mutations,
+      checkpoint,
+    };
   } catch {
     // A transport timeout is not evidence of absence. Reconcile the list first.
     const afterCreate = await readWithRetry(() => adapter.listConnectors());
@@ -280,11 +344,22 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
     const accepted = afterCreate.filter((connector) => sameEndpoint(connector, binding));
     if (accepted.length === 1) {
       const info = await readWithRetry(() => adapter.workspaceInfo(accepted[0]));
-      if (info?.ok && info.workspace === binding.workspace && info.repository === binding.canonicalRepository) {
-        checkpoint.connectorId = accepted[0].id;
-        checkpoint.phase = "REUSE";
-        saveCheckpoint(checkpoint);
-        return { status: "READY", phase: "REUSE", operationKey, connector: accepted[0], mutations, checkpoint };
+      if (info) {
+        const decision = validateConnectorVerification(binding, info);
+        if (decision.kind === "valid") {
+          checkpoint.connectorId = accepted[0].id;
+          checkpoint.phase = "REUSE";
+          saveCheckpoint(checkpoint);
+          return {
+            status: "READY",
+            phase: "REUSE",
+            operationKey,
+            connector: accepted[0],
+            compatibilityOutcome: classifyConnectionOutcome("READY", mutations).outcome,
+            mutations,
+            checkpoint,
+          };
+        }
       }
     }
     return waiting(checkpoint, "create result unknown; no verified connector", mutations);

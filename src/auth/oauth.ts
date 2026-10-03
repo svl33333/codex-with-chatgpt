@@ -11,6 +11,7 @@ export interface OAuthDeps {
   pairing: PairingManager;
   workspaceName: string;
   getBaseUrl: (req: Request) => string;
+  canonicalBaseUrl?: string | (() => string | null);
   logger: Logger;
 }
 
@@ -37,6 +38,19 @@ function isAllowedRedirectUri(uri: string): boolean {
     return true;
   }
   return false;
+}
+
+function normalizedBase(value: string): string {
+  return value.trim().replace(/\/+$/u, "").toLowerCase();
+}
+
+function canonicalBaseUrl(deps: OAuthDeps, req: Request): string {
+  const configured = typeof deps.canonicalBaseUrl === "function" ? deps.canonicalBaseUrl() : deps.canonicalBaseUrl;
+  return normalizedBase(configured || deps.getBaseUrl(req));
+}
+
+function canonicalResource(deps: OAuthDeps, req: Request): string {
+  return `${canonicalBaseUrl(deps, req)}/mcp`;
 }
 
 function authorizationServerMetadata(base: string): Record<string, unknown> {
@@ -148,10 +162,10 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
   // ---- Discovery metadata -------------------------------------------------
 
   const asMetadataHandler = (req: Request, res: Response): void => {
-    res.json(authorizationServerMetadata(deps.getBaseUrl(req)));
+    res.json(authorizationServerMetadata(canonicalBaseUrl(deps, req)));
   };
   const prMetadataHandler = (req: Request, res: Response): void => {
-    res.json(protectedResourceMetadata(deps.getBaseUrl(req)));
+    res.json(protectedResourceMetadata(canonicalBaseUrl(deps, req)));
   };
   router.get("/.well-known/oauth-authorization-server", asMetadataHandler);
   router.get("/.well-known/oauth-authorization-server/mcp", asMetadataHandler);
@@ -222,6 +236,15 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       return;
     }
     const scopes = filterScopes(query.scope);
+    if (scopes.length === 0) {
+      fail("invalid_scope", "Only the configured read-only scopes are supported");
+      return;
+    }
+    const expectedResource = canonicalResource(deps, req);
+    if (query.resource && normalizedBase(query.resource) !== normalizedBase(expectedResource)) {
+      fail("invalid_target", "The requested resource does not match this MCP server");
+      return;
+    }
     const request: PendingAuthRequest = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
@@ -229,7 +252,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       scopes,
       state: query.state,
       codeChallenge: query.code_challenge,
-      resource: query.resource,
+      resource: expectedResource,
       expiresAt: Date.now() + 10 * 60_000,
     };
     pendingRequests.set(request.id, request);
@@ -315,7 +338,12 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
         res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
         return;
       }
-      const tokens = deps.store.issueTokens({ clientId, scopes: record.scopes });
+      const expectedResource = canonicalResource(deps, req);
+      if (record.resource && normalizedBase(record.resource) !== normalizedBase(expectedResource)) {
+        res.status(400).json({ error: "invalid_grant", error_description: "resource mismatch" });
+        return;
+      }
+      const tokens = deps.store.issueTokens({ clientId, scopes: record.scopes, resource: record.resource ?? expectedResource });
       deps.logger.info(`Issued access token for client ${clientId}`);
       res.json({
         access_token: tokens.accessToken,
@@ -333,7 +361,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
         res.status(400).json({ error: "invalid_request" });
         return;
       }
-      const result = deps.store.refresh(refreshToken, clientId);
+      const result = deps.store.refresh(refreshToken, clientId, canonicalResource(deps, req));
       if (!result.ok) {
         res.status(400).json({ error: result.reason });
         return;

@@ -5,6 +5,12 @@ import {
   DEFAULT_CONNECTOR_NAME,
   mcpUrlFromPublic,
   normalizePublicUrl,
+  normalizeProjectDisplayName,
+  projectDisplayNameForWorkspace,
+  projectDisplayNameForWorkstream,
+  validateProjectDisplayName,
+  CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
+  APPROVED_A0_PROJECT_DISPLAY_NAME,
   reclaimUserMessage,
 } from "../src/config/endpoint.js";
 
@@ -66,5 +72,53 @@ describe("mcpUrlFromPublic", () => {
     expect(mcpUrlFromPublic("https://A.trycloudflare.com/")).toBe("https://a.trycloudflare.com/mcp");
     expect(mcpUrlFromPublic("https://a.trycloudflare.com/mcp")).toBe("https://a.trycloudflare.com/mcp");
     expect(normalizePublicUrl("https://A.trycloudflare.com/")).toBe("https://a.trycloudflare.com");
+  });
+});
+
+describe("Project display-name compatibility", () => {
+  it("accepts bounded names without changing them", () => {
+    const name = "codex-with-chatgpt-a0-surface-compatibility";
+    expect(validateProjectDisplayName(name).isValid).toBe(true);
+    expect(normalizeProjectDisplayName(name)).toBe(name);
+  });
+
+  it("normalizes the observed A0 overlong label to the approved replacement", () => {
+    expect(
+      projectDisplayNameForWorkstream("a0-chatgpt-surface-compatibility")
+    ).toBe(APPROVED_A0_PROJECT_DISPLAY_NAME);
+    expect(Array.from(APPROVED_A0_PROJECT_DISPLAY_NAME).length).toBeLessThanOrEqual(
+      CHATGPT_PROJECT_DISPLAY_NAME_LIMIT
+    );
+  });
+
+  it("exposes the normalized A0 label through the workspace/setup payload helper", () => {
+    expect(
+      projectDisplayNameForWorkspace("codex-with-chatgpt-a0-chatgpt-surface-compatibility", {
+        workspaceId: "workspace-a0",
+      })
+    ).toBe(APPROVED_A0_PROJECT_DISPLAY_NAME);
+  });
+
+  it("uses a deterministic identity-derived suffix for other overlong labels", () => {
+    const input = "codex-with-chatgpt-a-workstream-with-a-deliberately-long-generated-name";
+    const context = { durableWorkstreamIdentity: "a-workstream", workspaceId: "workspace-a", connectorName: "a0" };
+    const first = normalizeProjectDisplayName(input, context);
+    expect(first).toBe(normalizeProjectDisplayName(input, context));
+    expect(Array.from(first).length).toBeLessThanOrEqual(CHATGPT_PROJECT_DISPLAY_NAME_LIMIT);
+    expect(first).not.toBe(normalizeProjectDisplayName(input, { ...context, workspaceId: "workspace-b" }));
+  });
+
+  it("uses one canonical identity input across production payload contexts", () => {
+    const workspace = "codex-with-chatgpt-generic-workstream-with-a-deliberately-long-generated-name";
+    const fromDoctor = projectDisplayNameForWorkspace(workspace, {
+      workspaceId: "workspace-generic",
+      connectorName: "Codex with ChatGPT · old label",
+    });
+    const fromWorkspace = projectDisplayNameForWorkspace(workspace, {
+      workspaceId: "workspace-generic",
+      connectorName: "Codex with ChatGPT · repaired label",
+    });
+    expect(fromDoctor).toBe(fromWorkspace);
+    expect(Array.from(fromDoctor).length).toBeLessThanOrEqual(CHATGPT_PROJECT_DISPLAY_NAME_LIMIT);
   });
 });

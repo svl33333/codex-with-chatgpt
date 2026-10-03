@@ -7,7 +7,13 @@ export interface BearerAuthDeps {
   store: AuthStore;
   workspaceId: string;
   getBaseUrl: (req: Request) => string;
+  canonicalBaseUrl?: string | (() => string | null);
   logger: Logger;
+}
+
+function resolveBaseUrl(deps: BearerAuthDeps, req: Request): string {
+  const configured = typeof deps.canonicalBaseUrl === "function" ? deps.canonicalBaseUrl() : deps.canonicalBaseUrl;
+  return (configured || deps.getBaseUrl(req)).trim().replace(/\/+$/u, "").toLowerCase();
 }
 
 /**
@@ -17,9 +23,10 @@ export interface BearerAuthDeps {
  */
 export function bearerAuth(deps: BearerAuthDeps) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    const resourceBase = resolveBaseUrl(deps, req);
     const challenge = (error: string, description: string): string =>
       `Bearer realm="c2c", error="${error}", error_description="${description}", ` +
-      `resource_metadata="${deps.getBaseUrl(req)}/.well-known/oauth-protected-resource/mcp"`;
+      `resource_metadata="${resourceBase}/.well-known/oauth-protected-resource/mcp"`;
 
     const header = req.headers.authorization;
     if (!header || !header.toLowerCase().startsWith("bearer ")) {
@@ -30,7 +37,7 @@ export function bearerAuth(deps: BearerAuthDeps) {
       return;
     }
     const token = header.slice(7).trim();
-    const verdict = deps.store.verifyAccessToken(token);
+    const verdict = deps.store.verifyAccessToken(token, `${resourceBase}/mcp`);
     if (!verdict.ok) {
       deps.logger.warn(`Rejected MCP request: token ${verdict.reason}`);
       res

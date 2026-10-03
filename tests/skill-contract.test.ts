@@ -8,7 +8,9 @@ const normalizedSkill = skill.replace(/\s+/g, " ");
 describe("Codex-native Skill contract", () => {
   it("keeps the automatic in-app browser setup flow", () => {
     for (const phrase of [
-      "ALWAYS use the built-in in-app browser (iab)",
+      "Prefer the built-in in-app browser (iab)",
+      "supported authenticated-browser-profile fallback",
+      "semantic surface capability",
       "`setupMode` is `auto`: automatic browser setup",
       "Fill the known form in one script",
       "Only then run `c2c pair --json`",
@@ -42,12 +44,14 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("`c2c sandbox-allow --json` (do not pass `-w`)");
     expect(normalizedSkill).toContain("accepts and ignores a leftover `-w <anything>`");
     expect(normalizedSkill).toContain("These prefs are for this machine, not per workspace");
-    expect(normalizedSkill).toContain("ALWAYS use the built-in in-app browser (iab)");
+    expect(normalizedSkill).toContain("Prefer the built-in in-app browser (iab)");
     expect(normalizedSkill).toContain("An explicit C2C request");
   });
 
   it("uses Japanese rather than the former Chinese setup and recovery wording", () => {
     expect(normalizedSkill).toContain("ChatGPT で新しいプロジェクトを作成し");
+    expect(normalizedSkill).toContain("projectDisplayName");
+    expect(normalizedSkill).toContain("c2c workspace -w <workspace> --json");
     expect(normalizedSkill).toContain("プロジェクト限定メモリ");
     expect(normalizedSkill).toContain("プロジェクトで整理");
 
@@ -83,6 +87,11 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("c2c provisioning set");
     expect(normalizedSkill).toContain("resume immediately");
     expect(normalizedSkill).toContain("workspace_info");
+    expect(normalizedSkill).toContain("c2c app-selection record");
+    expect(normalizedSkill).toContain("--invocation pending");
+    expect(normalizedSkill).toContain("--invocation succeeded");
+    expect(normalizedSkill).toContain("--selection-task <task>");
+    expect(normalizedSkill).toContain("verifies this exact successful record");
     expect(normalizedSkill).not.toContain("waiting for the user to say「完了」");
     expect(normalizedSkill).not.toContain("完了」と伝えてください");
     expect(normalizedSkill).not.toContain("承認してから続行");

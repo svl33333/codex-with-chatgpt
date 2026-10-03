@@ -53,18 +53,14 @@ whatever data it needs by itself.
    These prefs are for this machine, not per workspace. Do not ask again
    on reconnect or a second repo. A new computer (empty prefs) asks/checks
    once.
-5. ALWAYS use the built-in in-app browser (iab) for every ChatGPT step.
-   Follow **In-app browser (ChatGPT)** below. NEVER Computer Use (no
-   screenshot-click). NEVER launch or control a third-party/external browser
-   (Chrome, Safari, Edge…), and never use `open <url>` to hand off to one.
-   - The ONLY exception: the user explicitly says the Cloudflare login must use
-     their own browser session — that single Cloudflare login step may go through
-     their browser; everything else stays in the built-in browser.
-   - If the user asks to run ChatGPT in their own browser, refuse politely and
-     explain: "Codex は ChatGPT の利用と接続設定を継続的に行うため、ページを頻繁に操作します。
-     ブラウザーの通常利用に影響する可能性があるため、ChatGPT は内蔵ブラウザーでのみ利用できます。" Only if the user replies
-     with an explicit "影響を許容します" may you proceed in their browser; otherwise
-     keep ChatGPT in the built-in browser, every time they ask.
+5. Prefer the built-in in-app browser (iab) for every ChatGPT step.
+   Follow **In-app browser (ChatGPT)** below. Never use Computer Use
+   screenshot-clicking or an arbitrary external browser. If the built-in route
+   is unavailable, use only a supported authenticated-browser-profile fallback
+   after the semantic surface selector reports that capability as available and
+   the exact authorized origin/account/workspace boundary still matches. Never
+   treat a stale deep link as proof that the semantic capability is unavailable,
+   and never broaden the origin or connector scope to recover.
 6. Conversation reuse depends on `c2c session --json` → `conversation.mode`
    (see Conversation management). Do not invent a second mode.
    - **long-chat** (legacy session file, or the user opted out): ONE ChatGPT
@@ -82,8 +78,10 @@ whatever data it needs by itself.
    settings directory. Run `c2c sandbox-allow --json` (idempotent). If it fails
    with EPERM / Operation not permitted, request elevated permissions and retry
    ONCE. After `{ "alreadyAllowed": true }` or `{ "added": true }`, stay silent.
-8. ChatGPT pages: only the URLs in **In-app browser (ChatGPT)**. Never start
-   from chatgpt.com and click through menus.
+8. ChatGPT pages: use the semantic surface capability and the approved same-site
+   URLs in **In-app browser (ChatGPT)**. Fixed deep URLs are fallback hints, not
+   identity proof; when a route redirects, rediscover the named capability in
+   the selected surface instead of declaring the feature absent.
 9. **Doctor gate.** After `c2c doctor --json`, do not `goto` ChatGPT and do not
    send `[C2C]` until local is green — except the reconnect settings pages when
    `chatgptRepair.needed` is true. Not green:
@@ -103,6 +101,23 @@ whatever data it needs by itself.
    public address.
    A ChatGPT-side 401 after a sent message is different: repair then, do not
    treat it as permission to skip this gate next time.
+
+## Current product compatibility
+
+- Prefer the semantic plugin-hub capability `create_app` (Add → Create custom
+  MCP server). Treat the historical deep settings route as a fallback
+  observation only; a redirect to an installed list is route drift, not proof
+  that custom MCP is unavailable.
+- `developerModeEnabled` is a legacy machine preference. Do not block setup
+  merely because it is absent or false; if the active account/workspace shows a
+  current policy gate, preserve it as a Human Boundary and do not bypass it.
+- Validate generated Project display names before submission. The observed
+  creation surface accepts at most 50 characters; normalize deterministically
+  while keeping workstream/repository/connector identity separate from the
+  display label. Never authorize ownership from a similar display name.
+- A Project/reviewer binding does not prove current app availability. For every
+  fresh MCP-dependent message, explicitly select or mention the exact app and
+  tie the evidence to the existing message idempotency key.
 
 ## In-app browser (ChatGPT)
 
@@ -372,9 +387,22 @@ chat reply.
    `docs/protocol.md` §Boot Prompt, then (same chat) send:
    `Use the "<connectorName>" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.`
    Confirm the reply matches `workspaceName` (wait per **In-app browser** §8).
-   Only then save the chat URL with `c2c session set` (see Conversation
-   management), then record the machine-observed state with
-   `c2c provisioning set -w <workspace> --phase ready --reason "workspace_info verified"`.
+   Before every fresh MCP-dependent message, persist the exact current-message
+   app selection with `c2c app-selection record` using the existing task,
+   iteration, and message id, with `--invocation pending`. After the selected
+   app actually returns `workspace_info` and `git_status`, update that same
+   message-key record with `--invocation succeeded --current-message-available
+   --workspace-verified`; if the invocation fails, update it with
+   `--invocation failed --failure <bounded-reason>` and do not assert readiness.
+   Only after the successful update, save the chat URL with `c2c session set`
+   (see Conversation management), then record the machine-observed state with
+   `c2c provisioning set -w <workspace> --phase ready
+   --surface plugin-hub-custom-mcp --outcome REUSED --account-verified
+   --read-only-verified --oauth-contract-verified --project-verified
+   --message-selection-verified --selection-task <task>
+   --selection-iteration <iteration> --selection-message-id <message-id>
+   --reason "workspace_info and git_status verified"`. The provisioning CLI
+   verifies this exact successful record before persisting READY.
    If the name does not match, do not save. markDeliverable.
 7. Report to the user exactly in this shape (no internals):
 
@@ -521,8 +549,13 @@ Project. Do **not** click the ChatGPT sidebar to create the Project
 
 1. Tell the user exactly this (fill in the workspace name):
 
+   First read `c2c workspace -w <workspace> --json` and use its
+   `projectDisplayName` field. This is the bounded, deterministic display
+   label generated by the provisioning layer; do not recreate normalization in
+   the Skill and do not use the label as durable identity proof.
+
 ```
-ChatGPT で新しいプロジェクトを作成し、名前を「<workspaceName>」にしてください。メモリは「プロジェクト限定メモリ」を選択してください。
+ChatGPT で新しいプロジェクトを作成し、名前を「<projectDisplayName>」にしてください。メモリは「プロジェクト限定メモリ」を選択してください。
 
 サイドバーに「プロジェクト」が見当たらない場合は、「チャット」にカーソルを合わせ、右側に現れる三点メニューから「プロジェクトで整理」を選択してください。
 

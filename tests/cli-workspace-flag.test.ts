@@ -117,3 +117,108 @@ describe("machine-wide commands accept leftover -w without using workspace state
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/unknown option/i);
   });
 });
+
+describe("C2C readiness consumes the successful current-message app record", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) cleanup(dir);
+    dirs.length = 0;
+    delete process.env.C2C_STATE_DIR;
+  });
+
+  it("requires pending → succeeded evidence for the exact delivery identity", () => {
+    const stateDir = isolateStateDir();
+    const workspace = makeTmpDir("cli-readiness-workspace");
+    dirs.push(stateDir, workspace);
+    const env = { C2C_STATE_DIR: stateDir };
+    const common = [
+      "app-selection",
+      "record",
+      "-w",
+      workspace,
+      "--task",
+      "task-readiness",
+      "--iteration",
+      "2",
+      "--message-id",
+      "message-readiness",
+      "--target-workstream",
+      "a0-chatgpt-surface-compatibility",
+      "--connector-name",
+      "Codex with ChatGPT",
+      "--requested-app",
+      "A0 app",
+      "--selection-method",
+      "product_equivalent",
+    ];
+    const pending = runCli([...common, "--invocation", "pending", "--current-message-available", "--json"], env);
+    expect(pending.status).toBe(0);
+    const succeeded = runCli(
+      [...common, "--invocation", "succeeded", "--current-message-available", "--workspace-verified", "--json"],
+      env
+    );
+    expect(succeeded.status).toBe(0);
+
+    const ready = runCli(
+      [
+        "provisioning",
+        "set",
+        "-w",
+        workspace,
+        "--phase",
+        "ready",
+        "--surface",
+        "plugin-hub-custom-mcp",
+        "--outcome",
+        "REUSED",
+        "--account-verified",
+        "--read-only-verified",
+        "--oauth-contract-verified",
+        "--project-verified",
+        "--message-selection-verified",
+        "--selection-task",
+        "task-readiness",
+        "--selection-iteration",
+        "2",
+        "--selection-message-id",
+        "message-readiness",
+        "--json",
+      ],
+      env
+    );
+    expect(ready.status).toBe(0);
+    expect(JSON.parse(ready.stdout).state).toMatchObject({ phase: "ready", messageSelectionVerified: true });
+    expect(JSON.parse(ready.stdout).state.messageSelectionKey).toEqual(expect.any(String));
+
+    const withoutRecord = runCli(
+      [
+        "provisioning",
+        "set",
+        "-w",
+        workspace,
+        "--phase",
+        "ready",
+        "--surface",
+        "plugin-hub-custom-mcp",
+        "--outcome",
+        "REUSED",
+        "--account-verified",
+        "--read-only-verified",
+        "--oauth-contract-verified",
+        "--project-verified",
+        "--message-selection-verified",
+        "--selection-task",
+        "task-readiness",
+        "--selection-iteration",
+        "2",
+        "--selection-message-id",
+        "different-message",
+        "--json",
+      ],
+      env
+    );
+    expect(withoutRecord.status).not.toBe(0);
+    expect(`${withoutRecord.stdout}\n${withoutRecord.stderr}`).toMatch(/successful current-message app selection/i);
+  });
+});
