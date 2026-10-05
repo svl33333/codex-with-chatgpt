@@ -63,8 +63,8 @@ issue:
   url: https://github.com/svl33333/codex-with-chatgpt/issues/13
 git:
   branch: requirements/full-auto-c2c-provisioning-revision
-  commit: 82a0149
-  reviewed_commit: 82a0149
+  commit: cffed3bf93311193a6347431ed7bd91981a18942
+  reviewed_commit: cffed3bf93311193a6347431ed7bd91981a18942
   remote_branch: requirements/full-auto-c2c-provisioning-revision
   remote_commit: 3b3a16f2d96a64d5365542dcb00ac25a039a3885
   remote_url: https://github.com/svl33333/codex-with-chatgpt.git
