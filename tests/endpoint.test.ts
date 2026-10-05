@@ -108,6 +108,23 @@ describe("Project display-name compatibility", () => {
     expect(first).not.toBe(normalizeProjectDisplayName(input, { ...context, workspaceId: "workspace-b" }));
   });
 
+  it("preserves the identity suffix and code-point boundary for non-BMP names", () => {
+    const input = "😀".repeat(80);
+    const first = normalizeProjectDisplayName(input, {
+      durableWorkstreamIdentity: "emoji-workstream",
+      workspaceId: "workspace-a",
+    });
+    const second = normalizeProjectDisplayName(input, {
+      durableWorkstreamIdentity: "emoji-workstream",
+      workspaceId: "workspace-b",
+    });
+
+    expect(Array.from(first).length).toBeLessThanOrEqual(CHATGPT_PROJECT_DISPLAY_NAME_LIMIT);
+    expect(first).toMatch(/-[0-9a-f]{8}$/);
+    expect(first).not.toBe(second);
+    expect(first).not.toContain("\uFFFD");
+  });
+
   it("uses one canonical identity input across production payload contexts", () => {
     const workspace = "codex-with-chatgpt-generic-workstream-with-a-deliberately-long-generated-name";
     const fromDoctor = projectDisplayNameForWorkspace(workspace, {

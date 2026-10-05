@@ -28,8 +28,15 @@ export interface ReviewerGitDiff {
   isRepo: boolean;
   mode: "unstaged" | "staged" | "head";
   diff: string;
-  hasMore?: boolean;
-  totalBytes?: number;
+  hasMore: boolean;
+  /** Byte offset of this page in the complete diff. */
+  offset: number;
+  /** UTF-8 byte count returned in this page. */
+  returnedBytes: number;
+  /** UTF-8 byte count of the complete diff. */
+  totalBytes: number;
+  /** The next page offset, or null when the complete diff was returned. */
+  nextOffset: number | null;
 }
 
 export interface ReviewerProofIdentity {
@@ -160,7 +167,23 @@ export function validateReviewerProof(
     return { ok: false, reason: "workspace_info_git_mismatch" };
   }
   if (!proof.gitStatus.isRepo || proof.gitStatus.branch !== expected.branch) return { ok: false, reason: "git_status_mismatch" };
-  if (!proof.gitDiff || proof.gitDiff.isRepo !== true || !proof.gitDiff.mode || typeof proof.gitDiff.diff !== "string" || proof.gitDiff.hasMore === true) {
+  if (
+    !proof.gitDiff ||
+    proof.gitDiff.isRepo !== true ||
+    !proof.gitDiff.mode ||
+    typeof proof.gitDiff.diff !== "string" ||
+    proof.gitDiff.hasMore !== false ||
+    !Number.isSafeInteger(proof.gitDiff.offset) ||
+    proof.gitDiff.offset < 0 ||
+    proof.gitDiff.offset !== 0 ||
+    !Number.isSafeInteger(proof.gitDiff.returnedBytes) ||
+    proof.gitDiff.returnedBytes < 0 ||
+    !Number.isSafeInteger(proof.gitDiff.totalBytes) ||
+    proof.gitDiff.totalBytes < 0 ||
+    proof.gitDiff.returnedBytes !== proof.gitDiff.totalBytes ||
+    proof.gitDiff.returnedBytes !== Buffer.byteLength(proof.gitDiff.diff, "utf8") ||
+    proof.gitDiff.nextOffset !== null
+  ) {
     return { ok: false, reason: "git_diff_missing" };
   }
   const expectedDigest = digestEvidence({

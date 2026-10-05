@@ -2,7 +2,7 @@ import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import type { ChatGPTSurfaceId, SurfaceOutcome } from "./chatgpt-surface.js";
 import type { PairingStrategy, PairingStrategyOverride } from "../pairing/strategy.js";
-import type { ReviewerProof } from "./reviewer-proof.js";
+import { validateReviewerProofIntegrity, type ReviewerProof } from "./reviewer-proof.js";
 
 /** Machine-local setup phases. This file never contains credentials or message bodies. */
 export const PROVISIONING_PHASES = [
@@ -171,7 +171,7 @@ export function hasProvisioningReadinessProof(
 
 /** Structured proof gate for new reviewer sessions; legacy boolean state remains readable. */
 export function hasStructuredReviewerProof(state: Pick<ProvisioningState, "reviewerProof">): boolean {
-  return isReviewerProof(state.reviewerProof);
+  return isReviewerProof(state.reviewerProof) && validateReviewerProofIntegrity(state.reviewerProof).ok;
 }
 
 export function readProvisioningState(workspaceId: string): ProvisioningState | null {

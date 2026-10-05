@@ -16,7 +16,7 @@ const base = {
     git: { isRepo: true, branch: "requirements/full-auto-c2c-provisioning-revision", commit: "c".repeat(40), dirty: true },
   },
   gitStatus: { isRepo: true, branch: "requirements/full-auto-c2c-provisioning-revision", staged: [], unstaged: [], untracked: [".harness/"] },
-  gitDiff: { isRepo: true, mode: "unstaged" as const, diff: "" },
+  gitDiff: { isRepo: true, mode: "unstaged" as const, diff: "", hasMore: false, offset: 0, returnedBytes: 0, totalBytes: 0, nextOffset: null },
 };
 
 describe("structured read-only reviewer proof", () => {
@@ -61,6 +61,30 @@ describe("structured read-only reviewer proof", () => {
     expect(validateReviewerProof({
       ...proof,
       gitDiff: { ...proof.gitDiff, hasMore: true },
+    }, {
+      ...base.appIdentity,
+      repository: base.repository,
+      root: base.root,
+      branch: base.workspaceInfo.git.branch!,
+      head: base.workspaceInfo.git.commit!,
+      readOnly: true,
+    })).toMatchObject({ ok: false, reason: "git_diff_missing" });
+
+    expect(validateReviewerProof({
+      ...proof,
+      gitDiff: { ...proof.gitDiff, offset: 12, returnedBytes: 4, totalBytes: 4, nextOffset: null },
+    }, {
+      ...base.appIdentity,
+      repository: base.repository,
+      root: base.root,
+      branch: base.workspaceInfo.git.branch!,
+      head: base.workspaceInfo.git.commit!,
+      readOnly: true,
+    })).toMatchObject({ ok: false, reason: "git_diff_missing" });
+
+    expect(validateReviewerProof({
+      ...proof,
+      gitDiff: { isRepo: true, mode: "unstaged", diff: "", hasMore: false },
     }, {
       ...base.appIdentity,
       repository: base.repository,

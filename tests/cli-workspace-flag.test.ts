@@ -166,7 +166,7 @@ describe("C2C readiness consumes the successful current-message app record", () 
         git: { isRepo: true, branch: git.branch, commit: git.commit, dirty: git.dirty },
       },
       gitStatus: { isRepo: true, branch: git.branch, staged: [], unstaged: [], untracked: [] },
-      gitDiff: { isRepo: true, mode: "unstaged", diff: "" },
+      gitDiff: { isRepo: true, mode: "unstaged", diff: "", hasMore: false, offset: 0, returnedBytes: 0, totalBytes: 0, nextOffset: null },
     });
     const reviewerProofPath = write(workspace, "reviewer-proof.json", JSON.stringify(reviewerProof));
     const common = [
@@ -335,7 +335,7 @@ describe("C2C readiness consumes the successful current-message app record", () 
         git: { isRepo: true, branch: git.branch, commit: git.commit, dirty: git.dirty },
       },
       gitStatus: { isRepo: true, branch: git.branch, staged: [], unstaged: [], untracked: [] },
-      gitDiff: { isRepo: true, mode: "unstaged", diff: "", hasMore: false },
+      gitDiff: { isRepo: true, mode: "unstaged", diff: "", hasMore: false, offset: 0, returnedBytes: 0, totalBytes: 0, nextOffset: null },
     }));
     const outputPath = path.join(outputDir, "proof.json");
     const result = runCli([
