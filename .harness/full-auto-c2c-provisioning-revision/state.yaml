@@ -39,8 +39,10 @@ workflow:
     same exact read-only binding after independently confirming offset-zero
     complete git_diff evidence, persisted READY proof-integrity validation,
     the 270-test execution record, and no unrelated source changes. The PASS
-    covers the local remediation candidate; the normal follow-up publication
-    update is recorded separately, and merge remains a distinct Human Gate.
+    covers the local remediation candidate. The final-review remediation was
+    then published as commit 590f98f18975be1a608f6f2f50b779c19553fce5, and
+    PR #14 was rechecked as OPEN/MERGEABLE against main with that exact head;
+    merge remains a distinct Human Gate.
     Issue-body parity remains
     unverified because the exact read-only connector has no Issue-fetch
     capability; this is retained as a review limitation rather than treated as
@@ -66,14 +68,14 @@ git:
   commit: cffed3bf93311193a6347431ed7bd91981a18942
   reviewed_commit: cffed3bf93311193a6347431ed7bd91981a18942
   remote_branch: requirements/full-auto-c2c-provisioning-revision
-  remote_commit: 3b3a16f2d96a64d5365542dcb00ac25a039a3885
+  remote_commit: 590f98f18975be1a608f6f2f50b779c19553fce5
   remote_url: https://github.com/svl33333/codex-with-chatgpt.git
 pr:
   number: 14
   url: https://github.com/svl33333/codex-with-chatgpt/pull/14
   base: main
   head: requirements/full-auto-c2c-provisioning-revision
-  head_commit: 3b3a16f2d96a64d5365542dcb00ac25a039a3885
+  head_commit: 590f98f18975be1a608f6f2f50b779c19553fce5
 artifacts:
   - .harness/full-auto-c2c-provisioning-revision/00-requirements-working.md
   - .harness/full-auto-c2c-provisioning-revision/02-plan-draft.md
@@ -106,4 +108,4 @@ c2c:
 next:
   action: publish the final-review remediation update and await merge approval
   blocked_on: merge approval
-updated_at: "2026-10-05T07:05:00Z"
+updated_at: "2026-10-05T07:14:00Z"
