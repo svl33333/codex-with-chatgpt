@@ -81,7 +81,7 @@ export function normalizeProjectDisplayName(
   const suffix = normalizationSuffix(context);
   const available = CHATGPT_PROJECT_DISPLAY_NAME_LIMIT - displayNameLength(suffix);
   const prefix = Array.from(trimmed).slice(0, Math.max(1, available)).join("").replace(/[\s-]+$/u, "");
-  return `${prefix}${suffix}`.slice(0, CHATGPT_PROJECT_DISPLAY_NAME_LIMIT);
+  return `${prefix}${suffix}`;
 }
 
 /** Build the stable generated label used by the ChatGPT Project provisioning layer. */

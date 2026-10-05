@@ -7,6 +7,7 @@ import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
 import { Workspace } from "../workspace/manager.js";
+import { gitInfo } from "../workspace/git.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
 import {
@@ -66,6 +67,7 @@ import {
 } from "../session/state.js";
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
+import { messageIdempotencyKey } from "../conversation/delivery.js";
 import {
   canonicalRepositoryFor,
   endpointFingerprint,
@@ -94,6 +96,10 @@ import {
   type AppSelectionRecord,
 } from "../conversation/app-selection.js";
 import { selectSupportedSurface, type SurfaceObservation } from "../provisioning/chatgpt-surface.js";
+import { reconcileProjectRuntime, verifyProjectSettingsSave } from "../provisioning/project-runtime.js";
+import type { ProjectIdentityEvidence, ProjectSettingsConfirmation, ProjectSurfaceObservation } from "../provisioning/project.js";
+import { selectPairingStrategy, type PairingStrategy, type PairingStrategyOverride } from "../pairing/strategy.js";
+import { buildReviewerProof, validateReviewerProof, type ReviewerProof, type ReviewerProofIdentity, type ReviewerProofInput } from "../provisioning/reviewer-proof.js";
 
 const program = new Command();
 
@@ -105,6 +111,42 @@ const cross = (msg: string): void => say(`✗ ${msg}`);
 
 function resolveWorkspace(option?: string): string {
   return path.resolve(option ?? process.cwd());
+}
+
+/** Resolve the exact connector/installation identity before minting pairing. */
+function connectorBindingForWorkspace(root: string): { connectorId: string; installationId: string } {
+  const workspace = new Workspace(root);
+  const saved = readConnectionBinding(workspace.id);
+  const endpoint = readLastEndpoint(workspace.id);
+  const installationId = saved?.installationId ?? endpoint?.installationId ?? getInstallationIdentity().installationId;
+  const connectorId = saved?.connectorName ?? endpoint?.connectorName ?? connectorNameFor({
+    workspaceName: workspace.name,
+    workspaceId: workspace.id,
+    previousName: null,
+    hadEndpointBefore: false,
+    installationId,
+  });
+  return { connectorId, installationId };
+}
+
+/** Resolve the live identity that a successful MCP reviewer proof must match. */
+function reviewerProofIdentityForWorkspace(workspace: Workspace): ReviewerProofIdentity {
+  const binding = readConnectionBinding(workspace.id);
+  if (!binding) throw new Error("WORKSPACE_MISMATCH: exact connection binding is required for reviewer proof");
+  const git = gitInfo(workspace.root);
+  if (!git.isRepo || !git.branch || !git.commit) {
+    throw new Error("WORKSPACE_MISMATCH: current repository branch and full HEAD are unavailable");
+  }
+  return {
+    workspaceId: workspace.id,
+    connectorName: binding.connectorName,
+    installationId: binding.installationId,
+    repository: binding.canonicalRepository,
+    root: workspace.root,
+    branch: git.branch,
+    head: git.commit,
+    readOnly: true,
+  };
 }
 
 function parseInteger(value: string): number {
@@ -311,8 +353,9 @@ interface TunnelStartResponse {
 }
 
 interface PairingResponse {
-  code: string;
+  code: string | null;
   expiresAt: number;
+  pairingStrategy?: string;
 }
 
 interface AdminInfo {
@@ -377,10 +420,22 @@ program
   .option("--port <port>", "preferred port")
   .action(async (opts: { workspace: string; port?: string }) => {
     const logger = new Logger({ name: "bridge", console: true });
+    const root = resolveWorkspace(opts.workspace);
+    const workspace = new Workspace(root);
+    const prefs = readUiPrefs();
+    const provisioningState = readProvisioningState(workspace.id);
+    const pairingSelection = selectPairingStrategy({
+      setupMode: prefs.setupMode ?? "auto",
+      override: provisioningState?.pairingStrategyOverride,
+      // Runtime-only handoff remains opt-in until real ChatGPT E2E proves it.
+      capability: { runtimeHandoff: false, exactBinding: true, verifiedOAuthSurface: true, automaticSubmission: true },
+    });
     const bridge = await startBridge({
-      workspaceRoot: resolveWorkspace(opts.workspace),
+      workspaceRoot: root,
       port: opts.port ? parseInt(opts.port, 10) : undefined,
       logger,
+      connectorBinding: connectorBindingForWorkspace(root),
+      pairingStrategy: pairingSelection.strategy,
     });
     const shutdown = (): void => {
       void bridge.close().then(() => process.exit(0));
@@ -475,7 +530,6 @@ program
             hadEndpointBefore: Boolean(readLastEndpoint(info.workspaceId)),
             installationId: getInstallationIdentity().installationId,
           });
-      const pairingResult = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
       const tunnelState = readTunnelState(info.workspaceId);
       if (opts.json) {
         say(
@@ -486,8 +540,9 @@ program
             connectorName,
             mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
             local: mcpUrl === null,
-            pairingCode: pairingResult.code,
-            pairingExpiresAt: pairingResult.expiresAt,
+            pairingCode: null,
+            pairingExpiresAt: null,
+            pairingRequiredAfterOAuthSurface: true,
             sandbox,
             tunnel: {
               mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
@@ -503,10 +558,9 @@ program
       if (mcpUrl) check("安全な接続を確立しました");
       say("");
       say(`接続先URL：${mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`}`);
-      say(`ペアリングコード：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分間有効）`);
       say("");
-      say("次の手順：ChatGPT のコネクタ設定で上記URLをOAuthとして追加し、認証ページでペアリングコードを入力してください。");
-      say("Codex Skill を使用している場合、この手順は自動で完了します。");
+      say("次の手順：ChatGPT のコネクタ設定で上記URLをOAuthとして追加し、認証ページが表示された後に `c2c pair --json` を実行してください。");
+      say("ペアリング値は表示中のOAuth要求へ自動的に結び付けられ、Codex Skill がブラウザで直ちに使用します。");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -1007,6 +1061,140 @@ program
     }
   });
 
+// ---------------------------------------------------------------- Project semantic surfaces
+
+const projectCommand = program
+  .command("project")
+  .description("Reconcile a machine-observed ChatGPT Project binding");
+
+projectCommand
+  .command("reconcile")
+  .description("Reuse one exact Project identity or return a bounded create decision")
+  .option("-w, --workspace <path>")
+  .requiredOption("--owner-account-id <id>")
+  .requiredOption("--connector-name <name>")
+  .requiredOption("--candidates-json <path>", "JSON array captured from the semantic Project surface")
+  .option("--instructions-fingerprint <fingerprint>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    workspace?: string;
+    ownerAccountId: string;
+    connectorName: string;
+    candidatesJson: string;
+    instructionsFingerprint?: string;
+    json: boolean;
+  }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const parsed: unknown = JSON.parse(fs.readFileSync(path.resolve(opts.candidatesJson), "utf8"));
+      if (!Array.isArray(parsed)) throw new Error("candidates-json must contain an array");
+      const result = reconcileProjectRuntime({
+        workspaceName: workspace.name,
+        intended: {
+          workspaceId: workspace.id,
+          connectorName: opts.connectorName,
+          ownerAccountId: opts.ownerAccountId,
+          projectId: readConnectionBinding(workspace.id)?.projectId,
+          projectInstructionsFingerprint: opts.instructionsFingerprint,
+        },
+        candidates: parsed as ProjectIdentityEvidence[],
+      });
+      if (opts.json) say(JSON.stringify({ ok: true, result }));
+      else if (result.outcome === "REUSED") {
+        check(result.needsRepair ? "既存Projectを再利用し、設定ドリフトを修復対象として記録しました" : "既存Projectを再利用しました");
+      } else if (result.outcome === "CREATE") {
+        say(`作成候補：${result.displayName}`);
+      } else {
+        throw new Error("C2C_CAPABILITY_UNAVAILABLE:project-identity-ambiguous");
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+projectCommand
+  .command("verify-settings")
+  .description("Verify the semantic Project Instructions surface and saved settings")
+  .requiredOption("--observation-json <path>", "JSON observation returned by the browser surface")
+  .requiredOption("--project-id <id>")
+  .requiredOption("--instructions-fingerprint <fingerprint>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { observationJson: string; projectId: string; instructionsFingerprint: string; json: boolean }) => {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(path.resolve(opts.observationJson), "utf8"));
+      if (!parsed || typeof parsed !== "object") throw new Error("observation-json must contain an object");
+      const value = parsed as { surface?: unknown; visible?: unknown; projectId?: unknown; controlId?: unknown; controlRole?: unknown; controlReady?: unknown; confirmation?: unknown };
+      const surface: ProjectSurfaceObservation = {
+        surface: value.surface as ProjectSurfaceObservation["surface"],
+        visible: value.visible === true,
+        projectId: typeof value.projectId === "string" ? value.projectId : undefined,
+        controlId: typeof value.controlId === "string" ? value.controlId : undefined,
+        controlRole: typeof value.controlRole === "string" ? value.controlRole : undefined,
+        controlReady: value.controlReady === true,
+      };
+      const confirmation = value.confirmation as ProjectSettingsConfirmation;
+      verifyProjectSettingsSave(surface, confirmation, opts.projectId, opts.instructionsFingerprint);
+      if (opts.json) say(JSON.stringify({ ok: true, projectId: opts.projectId, saved: true }));
+      else check("Project Instructions設定の保存確認が完了しました");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+// ---------------------------------------------------------------- reviewer proof
+
+const reviewerProofCommand = program
+  .command("reviewer-proof")
+  .description("Build non-secret exact read-only proof from one current-message MCP observation");
+
+reviewerProofCommand
+  .command("build")
+  .description("Build a message-keyed ReviewerProof from exact connector evidence")
+  .option("-w, --workspace <path>")
+  .requiredOption("--task <id>")
+  .requiredOption("--iteration <n>", "non-negative message iteration", parseNonNegativeInteger)
+  .requiredOption("--message-id <id>")
+  .requiredOption("--evidence-json <path>", "runtime-only JSON from the selected connector")
+  .requiredOption("--output <path>", "runtime-only proof JSON output")
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    workspace?: string;
+    task: string;
+    iteration: number;
+    messageId: string;
+    evidenceJson: string;
+    output: string;
+    json: boolean;
+  }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const raw = JSON.parse(fs.readFileSync(path.resolve(opts.evidenceJson), "utf8")) as Partial<ReviewerProofInput> & { messageKey?: string };
+      const messageKey = messageIdempotencyKey({ taskId: opts.task, iteration: opts.iteration, messageId: opts.messageId });
+      if (raw.messageKey !== undefined && raw.messageKey !== messageKey) {
+        throw new Error("WORKSPACE_MISMATCH: reviewer evidence message key does not match the current message");
+      }
+      const proof = buildReviewerProof({
+        messageKey,
+        appIdentity: raw.appIdentity!,
+        capability: "read-only",
+        repository: raw.repository!,
+        root: raw.root!,
+        workspaceInfo: raw.workspaceInfo!,
+        gitStatus: raw.gitStatus!,
+        gitDiff: raw.gitDiff!,
+      });
+      const validation = validateReviewerProof(proof, reviewerProofIdentityForWorkspace(workspace));
+      if (!validation.ok) throw new Error(`WORKSPACE_MISMATCH: ${validation.reason}`);
+      const output = path.resolve(opts.output);
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, JSON.stringify(proof, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+      if (opts.json) say(JSON.stringify({ ok: true, messageKey, output }));
+      else check(`ReviewerProofを生成しました（${messageKey}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
 // ---------------------------------------------------------------- identity
 
 program
@@ -1318,6 +1506,9 @@ provisioning
   .option("--selection-message-id <id>", "message id for the verified current-message app selection")
   .option("--workspace-info-hash <hash>")
   .option("--git-status-hash <hash>")
+  .option("--pairing-strategy-override <mode>", "auto or compatibility")
+  .option("--pairing-strategy <strategy>", "runtime_handoff or compatibility")
+  .option("--reviewer-proof-json <path>", "structured exact read-only reviewer proof")
   .option("--json", "machine-readable output", false)
   .action((opts: {
     workspace?: string;
@@ -1337,10 +1528,22 @@ provisioning
     selectionMessageId?: string;
     workspaceInfoHash?: string;
     gitStatusHash?: string;
+    pairingStrategyOverride?: string;
+    pairingStrategy?: string;
+    reviewerProofJson?: string;
     json: boolean;
   }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
     const phase = parseProvisioningPhase(opts.phase);
+    if (opts.pairingStrategyOverride && !["auto", "compatibility"].includes(opts.pairingStrategyOverride)) {
+      throw new Error("pairing-strategy-override must be auto or compatibility");
+    }
+    if (opts.pairingStrategy && !["runtime_handoff", "compatibility"].includes(opts.pairingStrategy)) {
+      throw new Error("pairing-strategy must be runtime_handoff or compatibility");
+    }
+    let reviewerProof = opts.reviewerProofJson
+      ? JSON.parse(fs.readFileSync(path.resolve(opts.reviewerProofJson), "utf8")) as ReviewerProof
+      : undefined;
     const patch = {
       reason: opts.reason,
       retryCount: opts.retryCount === undefined ? undefined : parseNonNegativeInteger(opts.retryCount),
@@ -1354,6 +1557,9 @@ provisioning
       messageSelectionVerified: opts.messageSelectionVerified ? true : undefined,
       workspaceInfoHash: opts.workspaceInfoHash,
       gitStatusHash: opts.gitStatusHash,
+      pairingStrategyOverride: opts.pairingStrategyOverride as PairingStrategyOverride | undefined,
+      pairingStrategy: opts.pairingStrategy as PairingStrategy | undefined,
+      reviewerProof,
     };
     let messageSelectionKey: string | undefined;
     if (opts.messageSelectionVerified) {
@@ -1368,8 +1574,21 @@ provisioning
       if (!isAppSelectionVerified(selection)) {
         throw new Error("message-selection-verified requires a successful current-message app selection record");
       }
+      if (!selection?.reviewerProof) {
+        throw new Error("message-selection-verified requires the structured proof attached to the successful app selection");
+      }
+      const expectedProof = reviewerProofIdentityForWorkspace(workspace);
+      const selectionProofValidation = validateReviewerProof(selection.reviewerProof, expectedProof);
+      if (!selectionProofValidation.ok) {
+        throw new Error(`WORKSPACE_MISMATCH: ${selectionProofValidation.reason}`);
+      }
+      if (reviewerProof && reviewerProof.evidenceDigest !== selection.reviewerProof.evidenceDigest) {
+        throw new Error("WORKSPACE_MISMATCH: provisioning proof does not match the successful app-selection proof");
+      }
+      reviewerProof = selection.reviewerProof;
       messageSelectionKey = selection?.messageKey;
     }
+    patch.reviewerProof = reviewerProof;
     const patchWithSelection = { ...patch, messageSelectionKey };
     if (phase === "ready" && patch.selectedSurface) {
       const observedSurface: SurfaceObservation = {
@@ -1394,6 +1613,7 @@ provisioning
       projectVerified: patch.projectVerified,
       messageSelectionVerified: patch.messageSelectionVerified,
       messageSelectionKey,
+      reviewerProof,
     })) {
       throw new Error("ready requires selected surface, compatibility outcome, and complete live verification proof");
     }
@@ -1424,6 +1644,7 @@ appSelection
   .requiredOption("--invocation <state>", "pending, succeeded, or failed")
   .option("--current-message-available", "the selected app is available on this message", false)
   .option("--workspace-verified", "workspace_info matched the target workspace", false)
+  .option("--reviewer-proof-json <path>", "structured exact read-only reviewer proof")
   .option("--failure <reason>", "app_unavailable, workspace_mismatch, read_only_mismatch, or unknown")
   .option("--json", "machine-readable output", false)
   .action((opts: {
@@ -1440,6 +1661,7 @@ appSelection
     invocation: string;
     currentMessageAvailable: boolean;
     workspaceVerified: boolean;
+    reviewerProofJson?: string;
     failure?: string;
     json: boolean;
   }) => {
@@ -1450,6 +1672,18 @@ appSelection
     if (!invocations.includes(opts.invocation as (typeof invocations)[number])) throw new Error("invalid invocation state");
     if (opts.failure && !failures.includes(opts.failure as (typeof failures)[number])) throw new Error("invalid selection failure");
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    const reviewerProof = opts.reviewerProofJson
+      ? JSON.parse(fs.readFileSync(path.resolve(opts.reviewerProofJson), "utf8")) as ReviewerProof
+      : undefined;
+    if (opts.invocation === "succeeded" && reviewerProof === undefined) {
+      throw new Error("succeeded app selection requires --reviewer-proof-json");
+    }
+    const reviewerProofExpected = opts.invocation === "succeeded"
+      ? reviewerProofIdentityForWorkspace(workspace)
+      : undefined;
+    if (reviewerProofExpected && opts.connectorName !== reviewerProofExpected.connectorName) {
+      throw new Error("WORKSPACE_MISMATCH: selected connector does not match the saved exact binding");
+    }
     const record = recordAppSelection({
       workspaceId: workspace.id,
       targetWorkstream: opts.targetWorkstream,
@@ -1462,6 +1696,9 @@ appSelection
       currentMessageAvailable: opts.currentMessageAvailable,
       invocation: opts.invocation as AppInvocationState,
       workspaceVerified: opts.workspaceVerified,
+      readOnlyCapability: reviewerProof ? "read-only" : undefined,
+      reviewerProof,
+      reviewerProofExpected,
       failure: opts.failure as AppSelectionRecord["failure"],
     });
     if (opts.json) say(JSON.stringify({ ok: true, record }));

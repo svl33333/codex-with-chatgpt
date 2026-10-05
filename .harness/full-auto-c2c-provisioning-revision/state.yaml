@@ -1,0 +1,111 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.4.0
+  spec_commit: 0069229049099c076a74ebb0c1797328ea8f8d3a
+  review_contract: schema/c2c-review-contract.json
+  step: 7
+  stage: Final Review / Merge
+  status: HUMAN_WAITING
+  last_completed_action: >-
+    Step 4 Direct plan review was explicitly approved by the user. The
+    approved 02-plan.md was implemented within scope; bounded
+    post-implementation C2C reviews returned FIX_REQUIRED for request-binding,
+    runtime pairing, Project identity, reviewer-proof, production wiring,
+    reviewer-proof acceptance-boundary coverage, exact Project-surface /
+    runtime-handoff acceptance, and production Skill proof integration. Those
+    findings were remediated in scope, deterministic validation passed again,
+    and a fresh execution record was written. The latest remediation also
+    corrected the production Skill's proof-file lifetime so the same proof is
+    consumed by provisioning READY before runtime-only files are removed.
+    The bounded iteration-7 C2C review returned PASS against the exact
+    read-only binding, current tree, and released iteration-6 evidence. The
+    user then approved the current Step 6 publication gate; candidate commit
+    82a0149 was created locally from the reviewed tree, state metadata commit
+    3b3a16f was pushed to the intended fork, and PR #14 was created. The
+    workstream is now in canonical Step 7 final review; merge remains a
+    separate Human Gate.
+    Final-review C2C iteration 1 returned FIX_REQUIRED for missing explicit
+    git_diff pagination-completion evidence and UTF-16 Project display-name
+    truncation on non-BMP input. Both findings were remediated within the
+    approved plan scope; deterministic validation passed with 269 tests in 26
+    files, typecheck/build/diff-check PASS. Final-review iteration 2 then
+    required offset-zero aggregate git_diff completeness and protection against
+    retaining legacy READY state with an incomplete ReviewerProof. Those gaps
+    were remediated in scope; validation passed with 270 tests in 26 files,
+    typecheck/build/diff-check PASS, and execution iteration 8 was recorded
+    before final re-review. Final-review iteration 3 returned PASS from the
+    same exact read-only binding after independently confirming offset-zero
+    complete git_diff evidence, persisted READY proof-integrity validation,
+    the 270-test execution record, and no unrelated source changes. The PASS
+    covers the local remediation candidate. The final-review remediation was
+    then published as commit 590f98f18975be1a608f6f2f50b779c19553fce5, and
+    PR #14 was rechecked as OPEN/MERGEABLE against main with that exact head;
+    merge remains a distinct Human Gate.
+    Issue-body parity remains
+    unverified because the exact read-only connector has no Issue-fetch
+    capability; this is retained as a review limitation rather than treated as
+    source evidence.
+  requirements_approval:
+    approved: true
+    approved_at: "2026-10-04T12:53:27Z"
+    source: user-approved-current-message
+  step4_approval:
+    route: direct
+    artifact: .harness/full-auto-c2c-provisioning-revision/02-plan.md
+    approved: true
+    approved_at: "2026-10-05T03:09:00Z"
+  push_approval:
+    approved: true
+    approved_at: "2026-10-05T06:08:24Z"
+    source: user-approved-current-message
+issue:
+  number: 13
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/13
+git:
+  branch: requirements/full-auto-c2c-provisioning-revision
+  commit: cffed3bf93311193a6347431ed7bd91981a18942
+  reviewed_commit: cffed3bf93311193a6347431ed7bd91981a18942
+  remote_branch: requirements/full-auto-c2c-provisioning-revision
+  remote_commit: 590f98f18975be1a608f6f2f50b779c19553fce5
+  remote_url: https://github.com/svl33333/codex-with-chatgpt.git
+pr:
+  number: 14
+  url: https://github.com/svl33333/codex-with-chatgpt/pull/14
+  base: main
+  head: requirements/full-auto-c2c-provisioning-revision
+  head_commit: 590f98f18975be1a608f6f2f50b779c19553fce5
+artifacts:
+  - .harness/full-auto-c2c-provisioning-revision/00-requirements-working.md
+  - .harness/full-auto-c2c-provisioning-revision/02-plan-draft.md
+  - .harness/full-auto-c2c-provisioning-revision/02-plan.md
+  - .harness/full-auto-c2c-provisioning-revision/04-test-summary.md
+  - .harness/full-auto-c2c-provisioning-revision/04-implementation-log.md
+  - .harness/full-auto-c2c-provisioning-revision/05-final-review.md
+  - .harness/full-auto-c2c-provisioning-revision/state.yaml
+c2c:
+  checkpoint: FINAL_REVIEW_PASS
+  review_stage: final
+  verdict: PASS
+  cycle: 1
+  last_action: REVIEW
+  iteration: 3
+  previous_post_implementation_verdict: PASS
+  previous_post_implementation_iteration: 7
+  last_review: >-
+    Final-review iteration 3 at workspaceId 279caac78bfd independently
+    confirmed the exact read-only repository/root/branch and published HEAD
+    3b3a16f, complete offset-zero git_diff evidence, and the persisted READY
+    proof-integrity gate. The iteration-2 findings are closed: later-page-only
+    diffs fail closed and legacy incomplete ReviewerProof values cannot retain
+    verified READY state. Validation passed with 270 tests in 26 files,
+    typecheck/build/diff-check PASS, and no unrelated source changes were
+    found. The exact connector still cannot fetch Issue #13 or PR #14, and
+    real fresh-workspace ChatGPT product E2E remains required before C
+    completion or compatibility-path weakening. PASS is not merge approval.
+  human_action_queue: []
+next:
+  action: publish the final-review remediation update and await merge approval
+  blocked_on: merge approval
+updated_at: "2026-10-05T07:14:00Z"

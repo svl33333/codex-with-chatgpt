@@ -1,6 +1,8 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import type { ChatGPTSurfaceId, SurfaceOutcome } from "./chatgpt-surface.js";
+import type { PairingStrategy, PairingStrategyOverride } from "../pairing/strategy.js";
+import { validateReviewerProofIntegrity, type ReviewerProof } from "./reviewer-proof.js";
 
 /** Machine-local setup phases. This file never contains credentials or message bodies. */
 export const PROVISIONING_PHASES = [
@@ -39,7 +41,7 @@ export const PROVISIONING_OUTCOMES = [
 ] as const;
 
 export interface ProvisioningState {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   workspaceId: string;
   phase: ProvisioningPhase;
   reason?: string;
@@ -55,6 +57,10 @@ export interface ProvisioningState {
   messageSelectionKey?: string;
   workspaceInfoHash?: string;
   gitStatusHash?: string;
+  pairingStrategyOverride?: PairingStrategyOverride;
+  pairingStrategy?: PairingStrategy;
+  proofSchemaVersion?: number;
+  reviewerProof?: ReviewerProof;
   updatedAt: string;
 }
 
@@ -72,6 +78,10 @@ export interface ProvisioningStatePatch {
   messageSelectionKey?: string;
   workspaceInfoHash?: string;
   gitStatusHash?: string;
+  pairingStrategyOverride?: PairingStrategyOverride;
+  pairingStrategy?: PairingStrategy;
+  proofSchemaVersion?: number;
+  reviewerProof?: ReviewerProof;
 }
 
 export interface ProvisioningObservation {
@@ -106,6 +116,35 @@ function isSurface(value: unknown): value is ChatGPTSurfaceId {
   return typeof value === "string" && PROVISIONING_SURFACE_IDS.includes(value as (typeof PROVISIONING_SURFACE_IDS)[number]);
 }
 
+function isPairingStrategyOverride(value: unknown): value is PairingStrategyOverride {
+  return value === "auto" || value === "compatibility";
+}
+
+function isPairingStrategy(value: unknown): value is PairingStrategy {
+  return value === "runtime_handoff" || value === "compatibility";
+}
+
+function isReviewerProof(value: unknown): value is ReviewerProof {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proof = value as Partial<ReviewerProof>;
+  const appIdentity = proof.appIdentity;
+  return (
+    proof.schemaVersion === 1 &&
+    typeof proof.messageKey === "string" &&
+    proof.messageKey.length > 0 &&
+    proof.capability === "read-only" &&
+    typeof proof.repository === "string" &&
+    typeof proof.root === "string" &&
+    typeof proof.branch === "string" &&
+    typeof proof.head === "string" &&
+    /^[0-9a-f]{40}$/i.test(proof.head) &&
+    typeof proof.evidenceDigest === "string" &&
+    /^[0-9a-f]{64}$/i.test(proof.evidenceDigest) &&
+    Boolean(appIdentity && typeof appIdentity.workspaceId === "string" && appIdentity.workspaceId.length > 0 &&
+      typeof appIdentity.connectorName === "string" && appIdentity.connectorName.length > 0)
+  );
+}
+
 export function hasProvisioningReadinessProof(
   state: Pick<
     ProvisioningState,
@@ -117,6 +156,7 @@ export function hasProvisioningReadinessProof(
     | "projectVerified"
     | "messageSelectionVerified"
     | "messageSelectionKey"
+    | "reviewerProof"
   >
 ): boolean {
   return (
@@ -124,15 +164,26 @@ export function hasProvisioningReadinessProof(
     (state.outcome === "REUSED" || state.outcome === "CREATED" || state.outcome === "RECOVERED") &&
     [state.accountVerified, state.readOnlyVerified, state.oauthContractVerified, state.projectVerified, state.messageSelectionVerified].every(Boolean) &&
     typeof state.messageSelectionKey === "string" &&
-    state.messageSelectionKey.length > 0
+    state.messageSelectionKey.length > 0 &&
+    hasStructuredReviewerProof(state)
   );
+}
+
+/** Structured proof gate for new reviewer sessions; legacy boolean state remains readable. */
+export function hasStructuredReviewerProof(state: Pick<ProvisioningState, "reviewerProof">): boolean {
+  return isReviewerProof(state.reviewerProof) && validateReviewerProofIntegrity(state.reviewerProof).ok;
 }
 
 export function readProvisioningState(workspaceId: string): ProvisioningState | null {
   const value = readJsonIfExists<Partial<ProvisioningState>>(provisioningFile(workspaceId));
-  if (!value || (value.schemaVersion !== 1 && value.schemaVersion !== 2) || value.workspaceId !== workspaceId || !isPhase(value.phase)) return null;
+  if (
+    !value ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) ||
+    value.workspaceId !== workspaceId ||
+    !isPhase(value.phase)
+  ) return null;
   return {
-    schemaVersion: 2,
+    schemaVersion: value.schemaVersion === 3 ? 3 : 2,
     workspaceId,
     phase: value.phase,
     ...(value.reason ? { reason: value.reason } : {}),
@@ -152,6 +203,12 @@ export function readProvisioningState(workspaceId: string): ProvisioningState | 
       : {}),
     ...(typeof value.workspaceInfoHash === "string" ? { workspaceInfoHash: value.workspaceInfoHash.slice(0, 64) } : {}),
     ...(typeof value.gitStatusHash === "string" ? { gitStatusHash: value.gitStatusHash.slice(0, 64) } : {}),
+    ...(isPairingStrategyOverride(value.pairingStrategyOverride) ? { pairingStrategyOverride: value.pairingStrategyOverride } : {}),
+    ...(isPairingStrategy(value.pairingStrategy) ? { pairingStrategy: value.pairingStrategy } : {}),
+    ...(typeof value.proofSchemaVersion === "number" && Number.isInteger(value.proofSchemaVersion) && value.proofSchemaVersion > 0
+      ? { proofSchemaVersion: value.proofSchemaVersion }
+      : {}),
+    ...(isReviewerProof(value.reviewerProof) ? { reviewerProof: value.reviewerProof } : {}),
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(),
   };
 }
@@ -171,16 +228,21 @@ export function writeProvisioningState(
     projectVerified: patch.projectVerified ?? previous?.projectVerified,
     messageSelectionVerified: patch.messageSelectionVerified ?? previous?.messageSelectionVerified,
     messageSelectionKey: patch.messageSelectionKey ?? previous?.messageSelectionKey,
+    reviewerProof: patch.reviewerProof ?? previous?.reviewerProof,
   };
   const selectedSurface = patch.selectedSurface ?? previous?.selectedSurface;
   const outcome = patch.outcome ?? previous?.outcome;
   const nextAction = patch.nextAction ?? previous?.nextAction;
   const workspaceInfoHash = patch.workspaceInfoHash ?? previous?.workspaceInfoHash;
   const gitStatusHash = patch.gitStatusHash ?? previous?.gitStatusHash;
+  const pairingStrategyOverride = patch.pairingStrategyOverride ?? previous?.pairingStrategyOverride;
+  const pairingStrategy = patch.pairingStrategy ?? previous?.pairingStrategy;
+  const proofSchemaVersion = patch.proofSchemaVersion ?? previous?.proofSchemaVersion;
+  const reviewerProof = patch.reviewerProof ?? previous?.reviewerProof;
   const ready = phase === "ready" && !hasProvisioningReadinessProof(proof);
   const persistedPhase = ready ? "workspace_verification" : phase;
   const next: ProvisioningState = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     workspaceId,
     phase: persistedPhase,
     ...(patch.reason?.trim() ? { reason: patch.reason.trim().slice(0, 400) } : ready ? { reason: "ready proof incomplete" } : {}),
@@ -200,6 +262,10 @@ export function writeProvisioningState(
       : {}),
     ...(typeof workspaceInfoHash === "string" ? { workspaceInfoHash: workspaceInfoHash.slice(0, 64) } : {}),
     ...(typeof gitStatusHash === "string" ? { gitStatusHash: gitStatusHash.slice(0, 64) } : {}),
+    ...(isPairingStrategyOverride(pairingStrategyOverride) ? { pairingStrategyOverride } : {}),
+    ...(isPairingStrategy(pairingStrategy) ? { pairingStrategy } : {}),
+    ...(typeof proofSchemaVersion === "number" && Number.isInteger(proofSchemaVersion) && proofSchemaVersion > 0 ? { proofSchemaVersion } : {}),
+    ...(isReviewerProof(reviewerProof) ? { reviewerProof } : {}),
     updatedAt: new Date().toISOString(),
   };
   writeSecureJson(provisioningFile(workspaceId), next);

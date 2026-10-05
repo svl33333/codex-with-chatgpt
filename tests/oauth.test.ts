@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
 import { startBridge, type Bridge } from "../src/bridge/server.js";
+import { filterScopes } from "../src/auth/store.js";
+import type { TunnelProvider, TunnelStatus, TunnelDoctorReport } from "../src/tunnel/provider.js";
 import { makeTmpDir, cleanup, write, isolateStateDir, pkceVerifierAndChallenge } from "./helpers.js";
 
 let root: string;
@@ -8,6 +10,37 @@ let bridge: Bridge;
 let base: string;
 
 const REDIRECT_URI = "http://127.0.0.1:19999/callback";
+
+class FakePublicTunnel implements TunnelProvider {
+  readonly name = "fake-public";
+  private url: string | null = null;
+
+  async start(_localPort: number): Promise<string> {
+    this.url = "https://runtime-handoff.example.test";
+    return this.url;
+  }
+
+  async stop(): Promise<void> {
+    this.url = null;
+  }
+
+  async restart(localPort: number): Promise<string> {
+    await this.stop();
+    return this.start(localPort);
+  }
+
+  status(): TunnelStatus {
+    return { running: this.url !== null, url: this.url, provider: this.name };
+  }
+
+  getPublicUrl(): string | null {
+    return this.url;
+  }
+
+  async doctor(): Promise<TunnelDoctorReport> {
+    return { provider: this.name, binaryFound: true, binaryPath: "test", running: this.url !== null, url: this.url, problems: [] };
+  }
+}
 
 beforeAll(async () => {
   isolateStateDir();
@@ -41,7 +74,7 @@ async function registerClient(): Promise<string> {
 async function authorizeWithPairing(
   clientId: string,
   challenge: string,
-  pairingCode: string,
+  pairingCode: string | undefined,
   state = "st-123",
   scope: string | null = "workspace.read workspace.search git.read execution.read offline_access"
 ): Promise<{ code: string | null; location: string | null; page?: string; status?: number }> {
@@ -59,10 +92,26 @@ async function authorizeWithPairing(
   const requestId = html.match(/name="request_id" value="([a-f0-9]+)"/)?.[1];
   if (!requestId) return { code: null, location: null, page: html, status: pageResponse.status };
 
+  // Test the production request-bound flow: the pairing session is minted only
+  // after the OAuth request is visible and carries the exact request binding.
+  const effectiveScopes = filterScopes(scope === null ? undefined : scope);
+  const boundPairing = bridge.pairing.create({
+    workspaceId: bridge.workspace.id,
+    connectorId: bridge.workspace.id,
+    installationId: bridge.workspace.id,
+    endpointOrigin: base,
+    requestId,
+    clientId,
+    redirectUri: REDIRECT_URI,
+    resource: `${base}/mcp`,
+    codeChallenge: challenge,
+    scopes: effectiveScopes,
+  });
+
   const postResponse = await fetch(`${base}/oauth/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ request_id: requestId, pairing_code: pairingCode }),
+    body: new URLSearchParams({ request_id: requestId, pairing_code: pairingCode ?? boundPairing.code }),
     redirect: "manual",
   });
   if (postResponse.status !== 302) {
@@ -114,8 +163,7 @@ describe("authorization + token flow", () => {
   it("completes the full pairing + PKCE flow and calls MCP", async () => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const pairing = bridge.pairing.create();
-    const { code, location } = await authorizeWithPairing(clientId, challenge, pairing.code);
+    const { code, location } = await authorizeWithPairing(clientId, challenge, undefined);
     expect(code).toBeTruthy();
     expect(location).toContain("state=st-123");
 
@@ -143,6 +191,98 @@ describe("authorization + token flow", () => {
       }),
     });
     expect(mcpResponse.status).toBe(200);
+  });
+
+  it("binds the automatic pairing mint to the pending OAuth request", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "workspace.read git.read offline_access");
+    const page = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(page.status).toBe(200);
+    const pairingResponse = await fetch(`${base}/admin/pairing`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bridge.adminToken}` },
+    });
+    expect(pairingResponse.status).toBe(200);
+    const pairing = (await pairingResponse.json()) as { code: string };
+    const requestId = (await page.text()).match(/name="request_id" value="([a-f0-9]+)"/)?.[1];
+    expect(requestId).toBeTruthy();
+    const post = await fetch(`${base}/oauth/authorize`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ request_id: requestId!, pairing_code: pairing.code }),
+      redirect: "manual",
+    });
+    expect(post.status).toBe(302);
+    const code = new URL(post.headers.get("location")!).searchParams.get("code");
+    expect(code).toBeTruthy();
+    expect((await exchangeToken(clientId, code!, verifier)).status).toBe(200);
+  });
+
+  it("claims the exact request before consuming a runtime-only handoff", async () => {
+    const runtimeRoot = makeTmpDir("oauth-runtime-handoff");
+    const runtimeBridge = await startBridge({
+      workspaceRoot: runtimeRoot,
+      port: 0,
+      persistRuntime: false,
+      authStoreFile: path.join(makeTmpDir("auth-runtime-handoff"), "store.json"),
+      tunnelProvider: new FakePublicTunnel(),
+      connectorBinding: { connectorId: "connector-runtime", installationId: "installation-runtime" },
+      pairingStrategy: "runtime_handoff",
+    });
+
+    try {
+      const runtimeBase = runtimeBridge.localBaseUrl();
+      const tunnelStart = await fetch(`${runtimeBase}/admin/tunnel/start`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${runtimeBridge.adminToken}` },
+      });
+      expect(tunnelStart.status).toBe(200);
+      const registration = await fetch(`${runtimeBase}/oauth/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ client_name: "Runtime-Handoff-Test", redirect_uris: [REDIRECT_URI] }),
+      });
+      expect(registration.status).toBe(201);
+      const clientId = ((await registration.json()) as { client_id: string }).client_id;
+      const { challenge } = pkceVerifierAndChallenge();
+      const authorizeUrl = new URL(`${runtimeBase}/oauth/authorize`);
+      authorizeUrl.searchParams.set("client_id", clientId);
+      authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("code_challenge", challenge);
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
+      authorizeUrl.searchParams.set("scope", "workspace.read git.read offline_access");
+      const page = await fetch(authorizeUrl, { redirect: "manual" });
+      expect(page.status).toBe(200);
+      const requestId = (await page.text()).match(/name="request_id" value="([a-f0-9]+)"/)?.[1];
+      expect(requestId).toBeTruthy();
+
+      const pairingResponse = await fetch(`${runtimeBase}/admin/pairing`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${runtimeBridge.adminToken}` },
+      });
+      expect(pairingResponse.status).toBe(200);
+      expect((await pairingResponse.json()) as { code: string | null }).toMatchObject({ code: null, pairingStrategy: "runtime_handoff" });
+
+      const post = await fetch(`${runtimeBase}/oauth/authorize`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ request_id: requestId! }),
+        redirect: "manual",
+      });
+      expect(post.status).toBe(302);
+      expect(new URL(post.headers.get("location")!).searchParams.get("code")).toBeTruthy();
+    } finally {
+      await runtimeBridge.close();
+      cleanup(runtimeRoot);
+    }
   });
 
   it("rejects an explicitly unsupported scope instead of expanding it", async () => {
@@ -180,8 +320,7 @@ describe("authorization + token flow", () => {
   it("does not implicitly grant offline access when scope is omitted", async () => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const pairing = bridge.pairing.create();
-    const { code } = await authorizeWithPairing(clientId, challenge, pairing.code, "no-offline", null);
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined, "no-offline", null);
     const token = await exchangeToken(clientId, code!, verifier);
     expect(token.status).toBe(200);
     expect(token.body.scope).not.toContain("offline_access");
@@ -191,7 +330,6 @@ describe("authorization + token flow", () => {
   it("rejects a wrong pairing code", async () => {
     const clientId = await registerClient();
     const { challenge } = pkceVerifierAndChallenge();
-    bridge.pairing.create();
     const result = await authorizeWithPairing(clientId, challenge, "AAAA-AAAA");
     expect(result.code).toBeNull();
     expect(result.status).toBe(401);
@@ -262,8 +400,7 @@ describe("authorization + token flow", () => {
   it("rejects PKCE verifier mismatch", async () => {
     const clientId = await registerClient();
     const { challenge } = pkceVerifierAndChallenge();
-    const pairing = bridge.pairing.create();
-    const { code } = await authorizeWithPairing(clientId, challenge, pairing.code);
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined);
     const token = await exchangeToken(clientId, code!, "wrong-verifier-wrong-verifier-wrong");
     expect(token.status).toBe(400);
     expect(token.body.error).toBe("invalid_grant");
@@ -272,8 +409,7 @@ describe("authorization + token flow", () => {
   it("authorization codes are one-time", async () => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const pairing = bridge.pairing.create();
-    const { code } = await authorizeWithPairing(clientId, challenge, pairing.code);
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined);
     const first = await exchangeToken(clientId, code!, verifier);
     expect(first.status).toBe(200);
     const second = await exchangeToken(clientId, code!, verifier);
@@ -363,8 +499,7 @@ describe("refresh token rotation", () => {
   it("rotates refresh tokens and invalidates the old one", async () => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const pairing = bridge.pairing.create();
-    const { code } = await authorizeWithPairing(clientId, challenge, pairing.code);
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined);
     const initial = await exchangeToken(clientId, code!, verifier);
 
     const refresh = async (refreshToken: string): Promise<{ status: number; body: Record<string, string> }> => {
