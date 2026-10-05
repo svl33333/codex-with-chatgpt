@@ -5,9 +5,9 @@ workflow:
   spec_version: 2.4.0
   spec_commit: 0069229049099c076a74ebb0c1797328ea8f8d3a
   review_contract: schema/c2c-review-contract.json
-  step: 5
-  stage: Implementation + C2C Review
-  status: READY
+  step: 6
+  stage: PR / Push Waiting
+  status: PUSH_WAITING
   last_completed_action: >-
     Step 4 Direct plan review was explicitly approved by the user. The
     approved 02-plan.md was implemented within scope; bounded
@@ -20,7 +20,9 @@ workflow:
     corrected the production Skill's proof-file lifetime so the same proof is
     consumed by provisioning READY before runtime-only files are removed.
     The bounded iteration-7 C2C review returned PASS against the exact
-    read-only binding, current tree, and released iteration-6 evidence.
+    read-only binding, current tree, and released iteration-6 evidence. The
+    user then approved the current Step 6 publication gate; candidate commit
+    82a0149 was created locally from the reviewed tree.
     Issue-body parity remains
     unverified because the exact read-only connector has no Issue-fetch
     capability; this is retained as a review limitation rather than treated as
@@ -34,12 +36,17 @@ workflow:
     artifact: .harness/full-auto-c2c-provisioning-revision/02-plan.md
     approved: true
     approved_at: "2026-10-05T03:09:00Z"
+  push_approval:
+    approved: true
+    approved_at: "2026-10-05T06:08:24Z"
+    source: user-approved-current-message
 issue:
   number: 13
   url: https://github.com/svl33333/codex-with-chatgpt/issues/13
 git:
   branch: requirements/full-auto-c2c-provisioning-revision
-  commit: c8e5a2b2ed7b56330983ecf2f5f629dea3f337db
+  commit: 82a0149
+  reviewed_commit: 82a0149
   remote_url: https://github.com/svl33333/codex-with-chatgpt.git
 artifacts:
   - .harness/full-auto-c2c-provisioning-revision/00-requirements-working.md
@@ -66,6 +73,6 @@ c2c:
     before C completion or compatibility-path weakening.
   human_action_queue: []
 next:
-  action: request push approval
+  action: push reviewed candidate, create PR, and verify remote state
   blocked_on: null
-updated_at: "2026-10-05T04:50:00Z"
+updated_at: "2026-10-05T06:08:24Z"
