@@ -71,4 +71,23 @@ describe("PairingManager", () => {
     expect(normalizePairingCode(" ab2-cd3 e ")).toBe("AB2CD3E");
     expect(formatPairingCode("ABCDEFGH")).toBe("ABCD-EFGH");
   });
+
+  it("does not consume a bound pairing code for a different OAuth request", () => {
+    const manager = new PairingManager("ws1");
+    const binding = {
+      workspaceId: "ws1",
+      connectorId: "connector-1",
+      installationId: "install-1",
+      endpointOrigin: "https://c2c.example",
+      requestId: "request-1",
+      clientId: "client-1",
+      redirectUri: "https://chatgpt.com/connector/oauth/callback",
+      resource: "https://c2c.example/mcp",
+      codeChallenge: "challenge-1",
+      scopes: ["workspace.read", "git.read"],
+    };
+    const { code } = manager.create(binding);
+    expect(manager.verifyForRequest(code, { ...binding, requestId: "request-2" })).toMatchObject({ ok: false, reason: "binding_mismatch" });
+    expect(manager.verifyForRequest(code, binding)).toMatchObject({ ok: true });
+  });
 });

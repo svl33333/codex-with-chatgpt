@@ -1,0 +1,71 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.4.0
+  spec_commit: 0069229049099c076a74ebb0c1797328ea8f8d3a
+  review_contract: schema/c2c-review-contract.json
+  step: 5
+  stage: Implementation + C2C Review
+  status: READY
+  last_completed_action: >-
+    Step 4 Direct plan review was explicitly approved by the user. The
+    approved 02-plan.md was implemented within scope; bounded
+    post-implementation C2C reviews returned FIX_REQUIRED for request-binding,
+    runtime pairing, Project identity, reviewer-proof, production wiring,
+    reviewer-proof acceptance-boundary coverage, exact Project-surface /
+    runtime-handoff acceptance, and production Skill proof integration. Those
+    findings were remediated in scope, deterministic validation passed again,
+    and a fresh execution record was written. The latest remediation also
+    corrected the production Skill's proof-file lifetime so the same proof is
+    consumed by provisioning READY before runtime-only files are removed.
+    The bounded iteration-7 C2C review returned PASS against the exact
+    read-only binding, current tree, and released iteration-6 evidence.
+    Issue-body parity remains
+    unverified because the exact read-only connector has no Issue-fetch
+    capability; this is retained as a review limitation rather than treated as
+    source evidence.
+  requirements_approval:
+    approved: true
+    approved_at: "2026-10-04T12:53:27Z"
+    source: user-approved-current-message
+  step4_approval:
+    route: direct
+    artifact: .harness/full-auto-c2c-provisioning-revision/02-plan.md
+    approved: true
+    approved_at: "2026-10-05T03:09:00Z"
+issue:
+  number: 13
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/13
+git:
+  branch: requirements/full-auto-c2c-provisioning-revision
+  commit: c8e5a2b2ed7b56330983ecf2f5f629dea3f337db
+  remote_url: https://github.com/svl33333/codex-with-chatgpt.git
+artifacts:
+  - .harness/full-auto-c2c-provisioning-revision/00-requirements-working.md
+  - .harness/full-auto-c2c-provisioning-revision/02-plan-draft.md
+  - .harness/full-auto-c2c-provisioning-revision/02-plan.md
+  - .harness/full-auto-c2c-provisioning-revision/04-test-summary.md
+  - .harness/full-auto-c2c-provisioning-revision/04-implementation-log.md
+  - .harness/full-auto-c2c-provisioning-revision/state.yaml
+c2c:
+  checkpoint: IMPLEMENTATION_REVIEW_PASS
+  review_stage: post_implementation
+  verdict: PASS
+  cycle: 6
+  last_action: REVIEW
+  iteration: 7
+  last_review: >-
+    The bounded iteration-7 post-implementation exact read-only C2C review at
+    workspaceId 279caac78bfd confirmed exact repository/root/branch/full HEAD
+    and read-only identity. It verified complete git_diff, readable iteration-6
+    execution evidence (268 tests in 26 files, typecheck/build/diff-check
+    PASS), the production proof lifetime/order, and the approved plan scope;
+    no implementation defect remains. The exact connector still cannot fetch
+    Issue #13, and real fresh-workspace ChatGPT product E2E remains required
+    before C completion or compatibility-path weakening.
+  human_action_queue: []
+next:
+  action: request push approval
+  blocked_on: null
+updated_at: "2026-10-05T04:50:00Z"

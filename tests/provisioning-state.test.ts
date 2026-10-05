@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   deriveProvisioningPhase,
+  provisioningFile,
   readProvisioningState,
   writeProvisioningState,
 } from "../src/provisioning/state.js";
@@ -92,5 +93,25 @@ describe("machine-local C2C provisioning state", () => {
       messageSelectionVerified: true,
     });
     expect(saved.phase).toBe("workspace_verification");
+  });
+
+  it("reads legacy schema state without losing its valid non-secret fields", () => {
+    const file = provisioningFile("workspace-legacy");
+    fs.mkdirSync(`${stateDir}/provisioning`, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1,
+      workspaceId: "workspace-legacy",
+      phase: "connector_ready",
+      outcome: "REUSED",
+      selectedSurface: "plugin-hub-custom-mcp",
+      updatedAt: "2026-10-04T00:00:00.000Z",
+    }));
+    expect(readProvisioningState("workspace-legacy")).toMatchObject({
+      schemaVersion: 2,
+      workspaceId: "workspace-legacy",
+      phase: "connector_ready",
+      outcome: "REUSED",
+      selectedSurface: "plugin-hub-custom-mcp",
+    });
   });
 });

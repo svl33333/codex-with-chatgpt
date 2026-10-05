@@ -37,7 +37,7 @@ export function gitInfo(root: string): GitInfo {
     return { isRepo: false, branch: null, commit: null, dirty: false };
   }
   const branch = runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const commit = runGit(root, ["rev-parse", "--short", "HEAD"]);
+  const commit = runGit(root, ["rev-parse", "HEAD"]);
   // Pathspec confines the result to the workspace subtree even when the
   // workspace root sits inside a larger repository.
   const status = runGit(root, ["status", "--porcelain", "--", "."]);

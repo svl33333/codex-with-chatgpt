@@ -119,6 +119,29 @@ whatever data it needs by itself.
   fresh MCP-dependent message, explicitly select or mention the exact app and
   tie the evidence to the existing message idempotency key.
 
+### Pairing strategy and compatibility contract
+
+`setupMode: auto` must preserve the published automatic pairing behavior: zero
+routine user copy/paste or manual pairing-code entry. A stronger runtime-only,
+one-use handoff is preferred when the exact workspace binding and verified
+OAuth surface are machine-proven, but it is not a mandatory replacement until
+real ChatGPT connector/OAuth end-to-end evidence exists.
+
+If the stronger handoff is unavailable, select the bounded automatic
+compatibility path (`pairingStrategyOverride=compatibility`) automatically.
+That path uses a short-lived, one-use value bound to the exact workspace,
+connector, OAuth request, redirect/resource, and scopes, consumes it
+immediately, and verifies the connection afterward. It never persists the
+value in files, state, logs, screenshots, fixtures, Project memory, or normal
+chat. Automatic-mode failure must not silently become manual setup; manual
+setup is reserved for an explicitly selected `setupMode: manual` or a genuine
+Human Boundary (login, CAPTCHA, unsupported 2FA, password/recovery,
+ambiguous account/ownership, unexpected SSO or scope expansion).
+
+The runtime may keep only bounded non-secret attempt metadata. Expiry,
+success, failure, abandonment, or a Human Boundary terminates the attempt.
+Ordinary non-GitHub and unrelated tool calls remain quiet.
+
 ## In-app browser (ChatGPT)
 
 Official skill: `control-in-app-browser`. These C2C rules override defaults
@@ -390,19 +413,39 @@ chat reply.
    Before every fresh MCP-dependent message, persist the exact current-message
    app selection with `c2c app-selection record` using the existing task,
    iteration, and message id, with `--invocation pending`. After the selected
-   app actually returns `workspace_info` and `git_status`, update that same
+   app actually returns the exact machine-readable `workspace_info`,
+   `git_status`, and complete required `git_diff` for this message, capture
+   those observations plus the selected app/connector identity in a
+   runtime-only evidence JSON (never synthesize them from local Git or a prose
+   summary). Build one non-secret, message-keyed proof from that exact
+   evidence with:
+   `c2c reviewer-proof build -w <workspace> --task <task> --iteration
+   <iteration> --message-id <message-id> --evidence-json <runtime-only-path>
+   --output <runtime-only-proof-path> --json`.
+   The command validates repository, canonical root, branch, full current HEAD,
+   workspace ID, connector/installation identity, read-only capability, and
+   the current saved binding before writing the proof. Then update that same
    message-key record with `--invocation succeeded --current-message-available
-   --workspace-verified`; if the invocation fails, update it with
+   --workspace-verified --reviewer-proof-json <runtime-only-proof-path>`; if
+   the invocation or any required evidence fails, update it with
    `--invocation failed --failure <bounded-reason>` and do not assert readiness.
-   Only after the successful update, save the chat URL with `c2c session set`
+   Do not use a second or substituted proof. Only after the successful update,
+   save the chat URL with `c2c session set`
    (see Conversation management), then record the machine-observed state with
    `c2c provisioning set -w <workspace> --phase ready
    --surface plugin-hub-custom-mcp --outcome REUSED --account-verified
    --read-only-verified --oauth-contract-verified --project-verified
    --message-selection-verified --selection-task <task>
    --selection-iteration <iteration> --selection-message-id <message-id>
-   --reason "workspace_info and git_status verified"`. The provisioning CLI
-   verifies this exact successful record before persisting READY.
+   --reviewer-proof-json <runtime-only-proof-path> --reason
+   "workspace_info, git_status, and git_diff verified"`. The provisioning CLI
+   verifies this exact successful record, reloads the successful app-selection
+   record, and verifies that the same
+   validated proof is used before persisting READY. Only after this command
+   returns success, remove the runtime-only evidence and proof files; the
+   persisted non-secret message-keyed state is the only durable review
+   evidence. Never use the old
+   boolean-only app-selection or READY command sequence.
    If the name does not match, do not save. markDeliverable.
 7. Report to the user exactly in this shape (no internals):
 
@@ -470,7 +513,7 @@ do not wait for a completion message:
 `c2c session -w <ws> --json` → `{ session, conversation }`.
 `conversation.mode` is the only switch. Missing / legacy files with a chat URL
 and no Project stay **long-chat**. Do not ask those users to migrate. If they
-later say they want a Project, run **Bind Project**. A brand-new workspace
+later say they want a Project, run **Automatic Project reconciliation**. A brand-new workspace
 (no session file) is **project**.
 
 Never match a Project or a chat by display name. Never upload the repo to
@@ -526,7 +569,8 @@ One ChatGPT Project per workspace. Mapping:
   `c2c session set -w <ws> --mode project --project-url <collection> --url <chat> --connector-name "<connectorName>" --title "C2C <workspace name>"`.
   If this Codex thread is continuing a previous C2C task, send HANDOFF right
   after the boot prompt.
-- Else: **Bind Project** first.
+- Else: run **Automatic Project reconciliation** first. Never treat a visible
+  reviewer composer as a substitute for Project settings or identity proof.
 
 **Update it**: same `c2c session set --task / --iteration / --state` as long-chat.
 
@@ -541,11 +585,55 @@ If the collection 404s or the new chat is not inside the Project, same choice.
 there, boot + HANDOFF from `session.checkpoint` (no logs) + workspace_info,
 then save the new chat URL. Keep `--project-url`.
 
-### Bind Project (user creates the collection once)
+### Automatic Project reconciliation
 
-Do this for a new workspace, or when an existing user asks to switch to
-Project. Do **not** click the ChatGPT sidebar to create the Project
-(Computer Use is forbidden; IAB must not hunt that menu).
+For a new workspace, Full Auto reconciles the exact Project in the same
+authenticated ChatGPT account; routine manual Project creation is not the
+normal path. Use the machine-local semantic evidence and
+`c2c project reconcile -w <workspace> --owner-account-id <account>
+--connector-name <connector> --candidates-json <path> --json`.
+
+Durable identity is `projectId`, collection URL, owner account, workspace ID,
+and exact connector name. Display names are labels only. One exact identity is
+reused and readiness drift is repaired; zero exact identities yields the one
+bounded create decision; multiple identities fail closed with a Human
+Boundary. Never recreate a Project or connector because settings drifted.
+
+The browser automation must distinguish these semantic destinations:
+
+- `project-creation-form` — create only the one missing Project;
+- `project-collection` — observe the collection and open a fresh chat;
+- `project-settings` — open settings for the exact Project;
+- `project-instructions` — write and save the complete instructions field;
+- `reviewer-composer` — send only review/control messages;
+- `connector-configuration` and `oauth-pairing-form` — connector/OAuth only.
+
+Project Instructions are written only through `project-settings` →
+`project-instructions`. If settings navigation or the Instructions control is
+unavailable, return `C2C_CAPABILITY_UNAVAILABLE:PROJECT_INSTRUCTIONS`; never
+fall back to the reviewer composer. Re-read settings and require machine
+confirmation of the exact project ID, fingerprint, project-only memory,
+Chat mode, and zero Library sources, then verify with:
+`c2c project verify-settings --observation-json <path> --project-id <id>
+--instructions-fingerprint <fingerprint> --json`.
+
+After reconciliation, create exactly one fresh Chat-mode reviewer chat when a
+prior chat contains polluted or partial setup text. On the first MCP-dependent
+message explicitly select the exact connector/app and require a structured
+message-keyed reviewer proof containing `workspace_info`, `git_status`, and
+the required `git_diff`, with full repository, workspace root, branch, current
+HEAD, workspace ID, connector identity, and read-only capability. A missing or
+mismatched proof is fail-closed as `WORKSPACE_MISMATCH`; do not repoint an
+unrelated connector.
+
+### Guided Project setup Human Boundary
+
+Only when the semantic reconciliation capability is unavailable, identity is
+ambiguous, or the account requires a genuine user boundary, give one bounded
+action using the deterministic `projectDisplayName` (at most 50 characters),
+then resume machine verification. Do not ask for routine acknowledgements,
+and do not treat a manual action as permission to send Project Instructions
+through the reviewer composer.
 
 1. Tell the user exactly this (fill in the workspace name):
 

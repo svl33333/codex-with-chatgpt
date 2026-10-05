@@ -152,17 +152,17 @@ function sameEndpoint(connector: ConnectorRecord, binding: ConnectionBinding): b
 function waiting(
   checkpoint: ReconcileCheckpoint,
   reason: string,
-  mutations: { create: number; delete: number }
+  mutations: { create: number; delete: number },
+  compatibilityOutcome: SurfaceOutcome = "RECOVERABLE_FAILURE"
 ): ReconcileOutcome {
   checkpoint.phase = checkpoint.phase === "VERIFY_ABSENT" ? "VERIFY_ABSENT" : "PREFLIGHT";
   saveCheckpoint(checkpoint);
-  const classified = classifyConnectionOutcome("CONNECTION_WAITING", mutations, reason);
   return {
     status: "CONNECTION_WAITING",
     phase: checkpoint.phase,
     operationKey: checkpoint.operationKey,
     reason,
-    compatibilityOutcome: classified.outcome,
+    compatibilityOutcome,
     mutations,
     checkpoint,
   };
@@ -242,9 +242,9 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
   let connectors = initialConnectors;
 
   const exact = connectors.filter((connector) => sameEndpoint(connector, binding));
-  if (exact.length > 1) return waiting(checkpoint, "multiple connectors match the binding", mutations);
+  if (exact.length > 1) return waiting(checkpoint, "multiple connectors match the binding", mutations, "HUMAN_BOUNDARY");
   const namedForeign = connectors.filter((connector) => connector.name === binding.connectorName && !matchesBinding(connector, binding));
-  if (namedForeign.length > 0) return waiting(checkpoint, "connector name is owned by another binding", mutations);
+  if (namedForeign.length > 0) return waiting(checkpoint, "connector name is owned by another binding", mutations, "HUMAN_BOUNDARY");
 
   if (exact.length === 1) {
     checkpoint.phase = "VERIFY";
@@ -274,7 +274,7 @@ async function reconcileUnlocked(binding: ConnectionBinding, adapter: Connection
 
   // Only an owned connector with a changed endpoint may be deleted.
   const ownedOld = connectors.filter((connector) => matchesBinding(connector, binding));
-  if (ownedOld.length > 1) return waiting(checkpoint, "multiple owned connector candidates", mutations);
+  if (ownedOld.length > 1) return waiting(checkpoint, "multiple owned connector candidates", mutations, "HUMAN_BOUNDARY");
   if (ownedOld.length === 1) {
     if (checkpoint.deleteAttempts > 0 && checkpoint.phase === "VERIFY_ABSENT") {
       // A previous delete timed out. Re-listing above is the authoritative check.

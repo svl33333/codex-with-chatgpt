@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { messageIdempotencyKey, type MessageIntent } from "./delivery.js";
+import { validateReviewerProof, validateReviewerProofIntegrity, type ReviewerProof, type ReviewerProofIdentity } from "../provisioning/reviewer-proof.js";
 
 export type AppSelectionMethod = "mention" | "composer" | "product_equivalent";
 export type AppInvocationState = "pending" | "succeeded" | "failed";
 
 export interface AppSelectionRecord {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   workspaceId: string;
   targetWorkstream: string;
   projectBinding?: string;
@@ -19,6 +20,9 @@ export interface AppSelectionRecord {
   currentMessageAvailable: boolean;
   invocation: AppInvocationState;
   workspaceVerified: boolean;
+  readOnlyCapability?: "read-only";
+  reviewerProof?: ReviewerProof;
+  reviewerProofExpected?: ReviewerProofIdentity;
   failure?: "app_unavailable" | "workspace_mismatch" | "read_only_mismatch" | "unknown";
   updatedAt: string;
 }
@@ -35,6 +39,9 @@ export interface AppSelectionInput {
   currentMessageAvailable: boolean;
   invocation: AppInvocationState;
   workspaceVerified: boolean;
+  readOnlyCapability?: "read-only";
+  reviewerProof?: ReviewerProof;
+  reviewerProofExpected?: ReviewerProofIdentity;
   failure?: AppSelectionRecord["failure"];
 }
 
@@ -51,7 +58,7 @@ export function recordAppSelection(input: AppSelectionInput): AppSelectionRecord
   const existing = readJsonIfExists<AppSelectionRecord>(selectionFile(input.workspaceId, messageKey));
   if (
     existing &&
-    (existing.schemaVersion !== 1 ||
+    (existing.schemaVersion !== 1 && existing.schemaVersion !== 2 ||
       existing.workspaceId !== input.workspaceId ||
       existing.messageKey !== messageKey ||
       existing.targetWorkstream !== input.targetWorkstream ||
@@ -60,8 +67,26 @@ export function recordAppSelection(input: AppSelectionInput): AppSelectionRecord
   ) {
     throw new Error("app selection message identity mismatch");
   }
+  if (input.reviewerProof && input.reviewerProof.messageKey !== messageKey) {
+    throw new Error("reviewer proof message identity mismatch");
+  }
+  if (input.readOnlyCapability === "read-only" && !input.reviewerProof) {
+    throw new Error("read-only app selection requires structured reviewer proof");
+  }
+  if (input.reviewerProof && input.reviewerProof.appIdentity.workspaceId !== input.workspaceId) {
+    throw new Error("reviewer proof workspace identity mismatch");
+  }
+  if (input.invocation === "succeeded" && input.reviewerProofExpected) {
+    if (!input.reviewerProof || !input.reviewerProofExpected) {
+      throw new Error("WORKSPACE_MISMATCH: succeeded app selection requires exact reviewer proof identity");
+    }
+    const validation = validateReviewerProofIntegrity(input.reviewerProof);
+    if (!validation.ok) throw new Error(`WORKSPACE_MISMATCH: ${validation.reason}`);
+    const expectedValidation = validateReviewerProof(input.reviewerProof, input.reviewerProofExpected);
+    if (!expectedValidation.ok) throw new Error(`WORKSPACE_MISMATCH: ${expectedValidation.reason}`);
+  }
   const record: AppSelectionRecord = {
-    schemaVersion: 1,
+    schemaVersion: input.reviewerProof ? 2 : 1,
     workspaceId: input.workspaceId,
     targetWorkstream: input.targetWorkstream,
     ...(input.projectBinding ? { projectBinding: input.projectBinding } : {}),
@@ -73,6 +98,8 @@ export function recordAppSelection(input: AppSelectionInput): AppSelectionRecord
     currentMessageAvailable: input.currentMessageAvailable,
     invocation: input.invocation,
     workspaceVerified: input.workspaceVerified,
+    ...(input.readOnlyCapability ? { readOnlyCapability: input.readOnlyCapability } : {}),
+    ...(input.reviewerProof ? { reviewerProof: input.reviewerProof } : {}),
     ...(input.failure ? { failure: input.failure } : {}),
     updatedAt: new Date().toISOString(),
   };
@@ -86,12 +113,16 @@ export function readAppSelection(
 ): AppSelectionRecord | null {
   const messageKey = messageIdempotencyKey(intent);
   const record = readJsonIfExists<AppSelectionRecord>(selectionFile(workspaceId, messageKey));
-  if (!record || record.schemaVersion !== 1 || record.workspaceId !== workspaceId || record.messageKey !== messageKey) return null;
+  if (!record || (record.schemaVersion !== 1 && record.schemaVersion !== 2) || record.workspaceId !== workspaceId || record.messageKey !== messageKey) return null;
   return record;
 }
 
 export function isAppSelectionVerified(record: AppSelectionRecord | null): boolean {
-  return Boolean(record?.currentMessageAvailable && record.invocation === "succeeded" && record.workspaceVerified);
+  if (!record || !record.currentMessageAvailable || record.invocation !== "succeeded" || !record.workspaceVerified) return false;
+  if (!record.reviewerProof) return true;
+  return record.readOnlyCapability === "read-only" &&
+    record.reviewerProof.messageKey === record.messageKey &&
+    validateReviewerProofIntegrity(record.reviewerProof).ok;
 }
 
 /** Require the successful, current-message record for a specific delivery. */

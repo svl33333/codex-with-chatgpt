@@ -5,7 +5,9 @@ import { Workspace } from "../workspace/manager.js";
 import { AuthStore } from "../auth/store.js";
 import { createOAuthRouter } from "../auth/oauth.js";
 import { bearerAuth } from "../auth/middleware.js";
-import { PairingManager } from "../pairing/manager.js";
+import { PairingManager, isPairingRequestBinding, type PairingRequestBinding } from "../pairing/manager.js";
+import { EphemeralPairingHandoff, type PairingHandoffBinding } from "../pairing/handoff.js";
+import type { PairingStrategy } from "../pairing/strategy.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createMcpHttpHandler } from "../mcp/http.js";
 import { CloudflaredQuickTunnel } from "../tunnel/cloudflared.js";
@@ -40,6 +42,8 @@ export interface BridgeOptions {
   authStoreFile?: string;
   pairingTtlMs?: number;
   accessTokenTtlMs?: number;
+  connectorBinding?: { connectorId: string; installationId: string };
+  pairingStrategy?: PairingStrategy;
 }
 
 export interface Bridge {
@@ -53,6 +57,30 @@ export interface Bridge {
   getPublicBaseUrl(): string | null;
   localBaseUrl(): string;
   close(): Promise<void>;
+  pairingStrategy: PairingStrategy;
+  pairingHandoff: EphemeralPairingHandoff;
+}
+
+function toHandoffBinding(binding: PairingRequestBinding): PairingHandoffBinding {
+  return {
+    workspaceId: binding.workspaceId,
+    connectorName: binding.connectorId,
+    origin: binding.endpointOrigin,
+    scopes: binding.scopes,
+    installationId: binding.installationId,
+    resource: binding.resource,
+    codeChallenge: binding.codeChallenge,
+  };
+}
+
+function toHandoffAuthorization(binding: PairingRequestBinding) {
+  return {
+    requestId: binding.requestId,
+    clientId: binding.clientId,
+    redirectUri: binding.redirectUri,
+    resource: binding.resource,
+    codeChallenge: binding.codeChallenge,
+  };
 }
 
 /**
@@ -89,8 +117,11 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
   const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
+  const pairingStrategy = opts.pairingStrategy ?? "compatibility";
+  const pairingHandoff = new EphemeralPairingHandoff(opts.pairingTtlMs ?? 5 * 60_000);
   const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
+  let pendingPairingBinding: PairingRequestBinding | null = null;
 
   let publicBaseUrl: string | null = null;
 
@@ -128,6 +159,12 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       workspaceName: workspace.name,
       getBaseUrl,
       canonicalBaseUrl: () => publicBaseUrl,
+      connectorBinding: opts.connectorBinding,
+      pairingHandoff,
+      onPendingPairingBinding: (binding) => { pendingPairingBinding = binding; },
+      onPairingCompleted: (binding) => {
+        if (pendingPairingBinding?.requestId === binding.requestId) pendingPairingBinding = null;
+      },
       logger,
     })
   );
@@ -160,10 +197,44 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     next();
   };
 
-  app.post("/admin/pairing", adminGuard, (_req, res) => {
-    const session = pairing.create();
+  app.post("/admin/pairing", adminGuard, express.json({ limit: "32kb" }), (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : undefined;
+    const candidate = body && Object.keys(body).length > 0 ? body.binding ?? body : undefined;
+    const binding = candidate && isPairingRequestBinding(candidate)
+      ? candidate
+      : candidate === undefined
+        ? pendingPairingBinding ?? undefined
+        : undefined;
+    if (candidate !== undefined && binding === undefined) {
+      res.status(400).json({ error: "invalid_pairing_binding" });
+      return;
+    }
+    if (!binding) {
+      res.status(409).json({ error: "C2C_CAPABILITY_UNAVAILABLE:pairing-request-binding" });
+      return;
+    }
+    const session = pairing.create(binding);
+    if (pairingStrategy === "runtime_handoff") {
+      pairingHandoff.issue(toHandoffBinding(binding), session.code, Date.now());
+      // The OAuth request binding is already fully observed at this boundary.
+      // Claim it before the browser POST so consume() can require the exact
+      // request/connector/PKCE context instead of relying on a loose handoff.
+      const claim = pairingHandoff.claim({
+        ...toHandoffBinding(binding),
+        authorization: toHandoffAuthorization(binding),
+      });
+      if (!claim.ok) {
+        pairing.invalidateAll();
+        res.status(409).json({ error: "C2C_CAPABILITY_UNAVAILABLE:pairing-handoff", reason: claim.reason });
+        return;
+      }
+    }
     logger.info("Created pairing session");
-    res.json({ code: session.code, expiresAt: session.expiresAt });
+    res.json({
+      code: pairingStrategy === "compatibility" ? session.code : null,
+      expiresAt: session.expiresAt,
+      pairingStrategy,
+    });
   });
 
   app.get("/admin/info", adminGuard, (_req, res) => {
@@ -178,6 +249,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       tunnel: tunnel.status(),
       tokenCount: authStore.tokenCount(),
       pairingActive: pairing.hasActiveSession(),
+      pairingStrategy,
       pid: process.pid,
       startedAt,
     });
@@ -261,5 +333,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     getPublicBaseUrl: () => publicBaseUrl,
     localBaseUrl: () => `http://${host}:${port}`,
     close: shutdown,
+    pairingStrategy,
+    pairingHandoff,
   };
 }

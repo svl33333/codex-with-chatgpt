@@ -97,6 +97,30 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).not.toContain("承認してから続行");
   });
 
+  it("uses the exact message-keyed ReviewerProof production path", () => {
+    expect(normalizedSkill).toContain("c2c reviewer-proof build");
+    expect(normalizedSkill).toContain("--evidence-json <runtime-only-path>");
+    expect(normalizedSkill).toContain("--output <runtime-only-proof-path>");
+    expect(normalizedSkill).toContain("--reviewer-proof-json <runtime-only-proof-path>");
+    expect(normalizedSkill).toContain("complete required `git_diff`");
+    expect(normalizedSkill).toContain("Do not use a second or substituted proof");
+    expect(normalizedSkill).toContain("Never use the old boolean-only app-selection or READY command sequence");
+  });
+
+  it("keeps runtime proof files until READY consumes the same proof", () => {
+    const buildIndex = normalizedSkill.indexOf("c2c reviewer-proof build");
+    const readyIndex = normalizedSkill.indexOf(
+      "c2c provisioning set -w <workspace> --phase ready",
+    );
+    const cleanupIndex = normalizedSkill.indexOf(
+      "remove the runtime-only evidence and proof files",
+    );
+
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(readyIndex).toBeGreaterThan(buildIndex);
+    expect(cleanupIndex).toBeGreaterThan(readyIndex);
+  });
+
   it("keeps runtime setup and recovery output localized and observable", () => {
     const runtime = [
       fs.readFileSync(path.join(process.cwd(), "src", "cli", "index.ts"), "utf8"),

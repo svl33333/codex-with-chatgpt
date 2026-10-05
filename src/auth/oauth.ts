@@ -1,7 +1,8 @@
 import { Router, type Request, type Response, urlencoded, json } from "express";
 import { randomBytes } from "node:crypto";
 import { AuthStore, SUPPORTED_SCOPES, base64UrlSha256, filterScopes, safeEqual } from "./store.js";
-import { PairingManager } from "../pairing/manager.js";
+import { PairingManager, type PairingRequestBinding } from "../pairing/manager.js";
+import { EphemeralPairingHandoff } from "../pairing/handoff.js";
 import type { Logger } from "../logger/index.js";
 import { PRODUCT_NAME } from "../version.js";
 import { escapeHtml, setAuthSecurityHeaders } from "./html.js";
@@ -12,10 +13,14 @@ export interface OAuthDeps {
   workspaceName: string;
   getBaseUrl: (req: Request) => string;
   canonicalBaseUrl?: string | (() => string | null);
+  connectorBinding?: { connectorId: string; installationId: string };
+  pairingHandoff?: EphemeralPairingHandoff;
+  onPendingPairingBinding?: (binding: PairingRequestBinding) => void;
+  onPairingCompleted?: (binding: PairingRequestBinding) => void;
   logger: Logger;
 }
 
-interface PendingAuthRequest {
+export interface PendingAuthRequest {
   id: string;
   clientId: string;
   redirectUri: string;
@@ -24,6 +29,27 @@ interface PendingAuthRequest {
   codeChallenge: string;
   resource?: string;
   expiresAt: number;
+  pairingBinding: PairingRequestBinding;
+}
+
+function requestBinding(deps: OAuthDeps, req: Request, request: Omit<PendingAuthRequest, "pairingBinding">): PairingRequestBinding {
+  const endpointOrigin = canonicalBaseUrl(deps, req);
+  const connectorBinding = deps.connectorBinding ?? {
+    connectorId: deps.store.workspaceId,
+    installationId: deps.store.workspaceId,
+  };
+  return {
+    workspaceId: deps.store.workspaceId,
+    connectorId: connectorBinding.connectorId,
+    installationId: connectorBinding.installationId,
+    endpointOrigin,
+    requestId: request.id,
+    clientId: request.clientId,
+    redirectUri: request.redirectUri,
+    resource: request.resource ?? canonicalResource(deps, req),
+    codeChallenge: request.codeChallenge,
+    scopes: request.scopes,
+  };
 }
 
 function isAllowedRedirectUri(uri: string): boolean {
@@ -245,7 +271,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       fail("invalid_target", "The requested resource does not match this MCP server");
       return;
     }
-    const request: PendingAuthRequest = {
+    const requestWithoutBinding = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
       redirectUri,
@@ -255,7 +281,12 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       resource: expectedResource,
       expiresAt: Date.now() + 10 * 60_000,
     };
+    const request: PendingAuthRequest = {
+      ...requestWithoutBinding,
+      pairingBinding: requestBinding(deps, req, requestWithoutBinding),
+    };
     pendingRequests.set(request.id, request);
+    deps.onPendingPairingBinding?.(request.pairingBinding);
     setAuthSecurityHeaders(res);
     res
       .status(200)
@@ -272,7 +303,31 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       res.status(400).send("This authorization request has expired. Please reconnect from ChatGPT.");
       return;
     }
-    const verdict = deps.pairing.verify(body.pairing_code ?? "", req.ip);
+    let pairingCode = body.pairing_code ?? "";
+    if (!pairingCode && deps.pairingHandoff) {
+      const handoff = deps.pairingHandoff.consume({
+        workspaceId: request.pairingBinding.workspaceId,
+        connectorName: request.pairingBinding.connectorId,
+        installationId: request.pairingBinding.installationId,
+        origin: request.pairingBinding.endpointOrigin,
+        scopes: request.pairingBinding.scopes,
+        resource: request.pairingBinding.resource,
+        codeChallenge: request.pairingBinding.codeChallenge,
+        authorization: {
+          requestId: request.pairingBinding.requestId,
+          clientId: request.pairingBinding.clientId,
+          redirectUri: request.pairingBinding.redirectUri,
+          resource: request.pairingBinding.resource,
+          codeChallenge: request.pairingBinding.codeChallenge,
+        },
+      });
+      if (handoff.ok) pairingCode = handoff.pairingCode;
+    }
+    const verdict = deps.pairing.verifyForRequest(
+      pairingCode,
+      request.pairingBinding,
+      req.ip
+    );
     if (!verdict.ok) {
       const messages: Record<string, string> = {
         invalid: `Incorrect pairing code.${verdict.attemptsLeft !== undefined ? ` ${verdict.attemptsLeft} attempts left.` : ""}`,
@@ -280,6 +335,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
         too_many_attempts: "Too many incorrect attempts. Ask Codex to generate a new pairing code.",
         rate_limited: "Too many attempts. Please wait a minute and try again.",
         no_active_session: "No active pairing session. Ask Codex to generate a pairing code.",
+        binding_mismatch: "This pairing code belongs to a different authorization request. Ask Codex to generate a new pairing code.",
       };
       deps.logger.warn(`Pairing verification failed: ${verdict.reason}`);
       setAuthSecurityHeaders(res);
@@ -297,6 +353,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       return;
     }
     pendingRequests.delete(request.id);
+    deps.onPairingCompleted?.(request.pairingBinding);
     const code = deps.store.createAuthorizationCode({
       clientId: request.clientId,
       redirectUri: request.redirectUri,

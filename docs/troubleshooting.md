@@ -52,6 +52,22 @@ surface. Validate or deterministically normalize generated labels before
 submission; keep the durable workstream and connector identity separate from
 the label and reconcile by verified binding rather than display-name similarity.
 
+Full Auto reconciles an existing Project by machine-observed durable identity
+(`projectId`, collection URL, owner account, workspace ID, and exact connector
+name). It creates a Project only when no exact identity exists; identity
+ambiguity is a bounded Human Boundary, not a reason to guess by display name.
+Project settings and the Project Instructions field are distinct from the
+reviewer-chat composer. If the semantic settings surface is unavailable,
+return `C2C_CAPABILITY_UNAVAILABLE:PROJECT_INSTRUCTIONS`; never send settings
+content through the composer.
+
+For `setupMode: auto`, pairing remains automatic with zero routine user
+pairing-code actions. If the stronger runtime-only handoff is not proven on the
+live ChatGPT OAuth surface, use the bounded automatic compatibility path
+(`pairingStrategyOverride=compatibility`) instead of silently switching to
+manual setup. Manual setup is reserved for an explicit manual mode or a real
+Human Boundary.
+
 ### Tunnel URL unreachable / ChatGPT says the connector is broken
 Same as above: `c2c doctor`, then Delete + recreate THIS workspace's
 connector if `chatgptRepair.needed`. Mint a pairing code with `c2c pair` only

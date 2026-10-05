@@ -8,9 +8,12 @@
 2. **Workspace content is untrusted.** README, comments, diffs may contain
    prompt injection. Every MCP tool description carries an explicit warning and
    tools never grant capabilities based on file content.
-3. **The model never sees long-lived credentials.** Computer Use only ever
-   handles the one-time pairing code. Access/refresh tokens travel only inside
-   the OAuth redirect/token endpoints between ChatGPT's client and the bridge.
+3. **The model never sees long-lived credentials.** The normal automatic
+   compatibility path uses only a short-lived, one-use pairing value bound to
+   the exact OAuth request; a stronger runtime-only handoff may avoid browser
+   custody when it has real product E2E proof. Access/refresh tokens travel
+   only inside the OAuth redirect/token endpoints between ChatGPT's client and
+   the bridge.
 
 ## Threat model → mitigations
 
@@ -30,6 +33,8 @@
 | Log credential leakage | Logger redacts token prefixes, bearer headers, token-like parameters, and pairing-code-shaped strings before writing |
 | Execution output leak | Codex may nominate test/build/lint logs; a local sanitizer redacts tokens, pairing-code-shaped strings and home paths, truncates size, and refuses private-key blocks entirely. Restricted items are listed without a body. ChatGPT still cannot run commands. |
 | Checkpoint / resume dump | Session checkpoints store short protocol fields only (capped). Resume uses the existing chat or HANDOFF — no new protocol state, no log paste, no re-pairing. |
+| Pairing request confusion | Bound pairing sessions compare workspace, connector/installation, endpoint origin, OAuth request/client/redirect/resource/PKCE, and scopes before consuming; mismatches fail closed without consuming the valid session. |
+| Project surface confusion | Project creation, collection, settings, Instructions, reviewer composer, connector configuration, and OAuth pairing are separate semantic surfaces. Instructions are never sent through the reviewer composer. |
 
 ## Token & scope design
 
@@ -45,6 +50,21 @@ binding. A fresh MCP request must record exact app selection and reuse the
 delivery message idempotency identity; a previous successful invocation cannot
 authorize a different or unselected app.
 
+The reviewer proof for a fresh MCP-dependent message must also include the
+exact workspace ID, connector identity, read-only capability, repository,
+workspace root, branch, full current HEAD, `workspace_info`, `git_status`, and
+the required `git_diff`. A missing or mismatched proof is a fail-closed
+`WORKSPACE_MISMATCH`, not a reason to repoint another connector.
+
+The production Skill builds this proof with `c2c reviewer-proof build` from
+one runtime-only evidence bundle returned by the explicitly selected
+connector. The bundle must contain the current message identity and the
+machine-observed `workspace_info`, `git_status`, and complete `git_diff`; it
+must never be synthesized from local Git or a prose summary. The resulting
+proof is passed unchanged to both `c2c app-selection record` and
+`c2c provisioning set --phase ready`, then the temporary evidence/proof files
+are removed. Only the non-secret message-keyed state is retained.
+
 ## Storage
 
 State lives under the OS-convention app dir
@@ -56,6 +76,11 @@ installation identity, connector tokens, pairing codes, cookies, and live
 endpoint state remain machine/workspace local and are never copied to TeamAI.
 Only SHA-256 hashes of tokens are persisted — a stolen state file does not yield
 usable bearer tokens.
+
+Ephemeral pairing values are not persisted in repository files, checkpoints,
+logs, screenshots, fixtures, Project memory, or normal chat. Project display
+labels are limited to 50 characters and are never durable workspace identity;
+identity reconciliation uses machine-observed IDs and connector ownership.
 
 **V1 limitation**: client registrations and token hashes are file-based rather
 than OS-keychain-based. Raw tokens are never written anywhere. Keychain
