@@ -145,6 +145,33 @@ address — same features, just a slower repair.
 
 Credentials stay in the OS app state directory, not in the project.
 
+### Machine-wide ChatGPT janitor
+
+`c2c janitor` is deliberately machine-wide; a leftover `-w <path>` is accepted
+for compatibility but is ignored. The workflow is:
+
+```text
+c2c janitor scan       # read-only semantic inventory
+c2c janitor plan       # save an editable local plan
+c2c janitor dry-run    # validate edits and print the digest
+c2c janitor apply --plan-digest <digest>
+c2c janitor rescan     # correlate the frozen targets after apply
+```
+
+Inventories, plans, and bounded apply results stay under the user-local C2C
+state directory. Only stable IDs and allowlisted safe metadata are persisted;
+URLs, page content, credentials, cookies, tokens, screenshots, and browser
+storage are excluded. Exact current C2C references are protected automatically;
+ambiguous, stale, unknown, or unsupported resources fail closed. `apply` is the
+only command that can request external deletion, and it requires a manually
+edited plan plus its exact digest. The companion uses a dedicated owner-only
+browser profile and a visible first-party ChatGPT page; login, CAPTCHA, or
+unsupported 2FA remains a human boundary. An unauthenticated profile remains
+visible for a bounded human sign-in/2FA opportunity, with no credential entry
+by the companion; unavailable semantic routes return `CAPABILITY_UNAVAILABLE`
+without mutating anything, and partial capability support is recorded in
+inventory diagnostics.
+
 ## How it works
 
 ```

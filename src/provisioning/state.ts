@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { withProtectionFinalizationLease } from "../janitor/lease.js";
 import type { ChatGPTSurfaceId, SurfaceOutcome } from "./chatgpt-surface.js";
 import type { PairingStrategy, PairingStrategyOverride } from "../pairing/strategy.js";
 import { validateReviewerProofIntegrity, type ReviewerProof } from "./reviewer-proof.js";
@@ -268,7 +269,7 @@ export function writeProvisioningState(
     ...(isReviewerProof(reviewerProof) ? { reviewerProof } : {}),
     updatedAt: new Date().toISOString(),
   };
-  writeSecureJson(provisioningFile(workspaceId), next);
+  withProtectionFinalizationLease(() => writeSecureJson(provisioningFile(workspaceId), next));
   return next;
 }
 

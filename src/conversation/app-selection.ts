@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { withProtectionFinalizationLease } from "../janitor/lease.js";
 import { messageIdempotencyKey, type MessageIntent } from "./delivery.js";
 import { validateReviewerProof, validateReviewerProofIntegrity, type ReviewerProof, type ReviewerProofIdentity } from "../provisioning/reviewer-proof.js";
 
@@ -103,7 +104,7 @@ export function recordAppSelection(input: AppSelectionInput): AppSelectionRecord
     ...(input.failure ? { failure: input.failure } : {}),
     updatedAt: new Date().toISOString(),
   };
-  writeSecureJson(selectionFile(input.workspaceId, messageKey), record);
+  withProtectionFinalizationLease(() => writeSecureJson(selectionFile(input.workspaceId, messageKey), record));
   return record;
 }
 

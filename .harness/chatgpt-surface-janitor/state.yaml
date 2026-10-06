@@ -1,0 +1,55 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.4.0
+  spec_commit: 0069229049099c076a74ebb0c1797328ea8f8d3a
+  review_contract: schema/c2c-review-contract.json
+  step: 6
+  stage: PR / Push Waiting
+  status: RUNNING
+  last_completed_action: "Step 6 push / PR Human Gate approved; candidate revalidated and publication started."
+step4_approval:
+  route: direct
+  artifact: .harness/chatgpt-surface-janitor/02-plan.md
+  approved: true
+  approved_at: "2026-10-07T01:54:27+09:00"
+issue:
+  number: 18
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/18
+git:
+  branch: maintenance/chatgpt-surface-janitor
+  base_branch: main
+  base_head: 075dac3880adef4af90e9fd152f0788a28eb1fa3
+artifacts:
+  - .harness/chatgpt-surface-janitor/00-workflow-resolution.md
+  - .harness/chatgpt-surface-janitor/00-requirements-working.md
+  - .harness/chatgpt-surface-janitor/01-issue-snapshot.md
+  - .harness/chatgpt-surface-janitor/02-plan-draft.md
+  - .harness/chatgpt-surface-janitor/02-c2c-unavailable.md
+  - .harness/chatgpt-surface-janitor/02-c2c-review-cycle-0.md
+  - .harness/chatgpt-surface-janitor/02-c2c-review-cycle-1.md
+  - .harness/chatgpt-surface-janitor/02-c2c-review-cycle-2.md
+  - .harness/chatgpt-surface-janitor/02-c2c-review-cycle-3.md
+  - .harness/chatgpt-surface-janitor/02-plan.md
+  - .harness/chatgpt-surface-janitor/02-c2c-review-summary.md
+  - .harness/chatgpt-surface-janitor/04-test-summary.md
+  - .harness/chatgpt-surface-janitor/04-implementation-log.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-4.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-5.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-6.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-7.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-8.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-9.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-10.md
+  - .harness/chatgpt-surface-janitor/04-c2c-review-cycle-11.md
+c2c:
+  checkpoint: STEP5_POST_IMPLEMENTATION_C2C_REVIEW
+  review_stage: post_implementation
+  verdict: PASS
+  cycle: 11
+  last_action: C2C_PASS
+  human_action_queue: []
+next:
+  action: Commit the approved implementation, push only the origin branch, create the Issue #18 PR, record remote head and checks, then begin Step 7 final review.
+updated_at: "2026-10-07T07:09:22+09:00"

@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { withProtectionFinalizationLease } from "../janitor/lease.js";
 import { runGit } from "../workspace/git.js";
 import type { ChatGPTSurfaceId } from "../provisioning/chatgpt-surface.js";
+import type { JanitorResourceKind } from "../janitor/domain.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
 
@@ -30,6 +32,7 @@ export interface ConnectionBinding {
   readOnlyProof?: "verified" | "unverified";
   workspaceVerification?: "verified" | "unverified";
   identitySource?: "connector_record" | "surface_observation";
+  janitorResourceIds?: Partial<Record<JanitorResourceKind, string>>;
   updatedAt: string;
 }
 
@@ -110,7 +113,9 @@ export function readConnectionBinding(workspaceId: string): ConnectionBinding | 
 }
 
 export function writeConnectionBinding(binding: ConnectionBinding): ConnectionBinding {
-  writeSecureJson(bindingFile(binding.workspaceId), { ...binding, updatedAt: new Date().toISOString() });
+  withProtectionFinalizationLease(() => {
+    writeSecureJson(bindingFile(binding.workspaceId), { ...binding, updatedAt: new Date().toISOString() });
+  });
   return readConnectionBinding(binding.workspaceId) ?? binding;
 }
 
@@ -130,6 +135,7 @@ export function makeConnectionBinding(input: {
   readOnlyProof?: "verified" | "unverified";
   workspaceVerification?: "verified" | "unverified";
   identitySource?: "connector_record" | "surface_observation";
+  janitorResourceIds?: Partial<Record<JanitorResourceKind, string>>;
 }): ConnectionBinding {
   const installation = getInstallationIdentity();
   const endpointMode = input.endpointMode ?? "ephemeral";
@@ -160,6 +166,7 @@ export function makeConnectionBinding(input: {
       : {}),
     ...((input.identitySource ?? previous?.identitySource) ? { identitySource: input.identitySource ?? previous?.identitySource } : {}),
     ...(input.projectId ?? previous?.projectId ? { projectId: input.projectId ?? previous?.projectId } : {}),
+    ...((input.janitorResourceIds ?? previous?.janitorResourceIds) ? { janitorResourceIds: input.janitorResourceIds ?? previous?.janitorResourceIds } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
