@@ -7,8 +7,8 @@ workflow:
   review_contract: schema/c2c-review-contract.json
   step: 7
   stage: Final Review
-  status: C2C_WAITING
-  last_completed_action: "Step 6 publication completed; origin branch and Issue #18 PR verified; Step 7 final review requested."
+  status: HUMAN_WAITING
+  last_completed_action: "Step 7 final C2C review passed; final evidence and HEAD reconciliation recorded; waiting for merge approval."
 step4_approval:
   route: direct
   artifact: .harness/chatgpt-surface-janitor/02-plan.md
@@ -86,4 +86,4 @@ final_review:
     reviewed_content_anchor: 1f9eb5ef43dd9e6d36f4635db18d3c14a9127ec8
     actual_merged_head: null
     merge_commit: null
-updated_at: "2026-10-07T07:18:26+09:00"
+updated_at: "2026-10-07T07:20:00+09:00"
