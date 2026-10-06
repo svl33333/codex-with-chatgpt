@@ -7,8 +7,8 @@ workflow:
   review_contract: schema/c2c-review-contract.json
   resolver_validation_status: WORKFLOW_READY
   direct_validator_status: passed
-  step: 6
-  stage: PR / Push Publication
+  step: 7
+  stage: Final Review / Merge
   status: RUNNING
   step4_approval:
     route: direct
@@ -72,6 +72,13 @@ git:
   publication_repository: svl33333/codex-with-chatgpt
   publication_account: svl33333
   publication_context_resolved_at: "2026-10-06T05:32:44.956Z"
+  publication_commit: 13c77fd2b2a3ea1adb69703cf1a1bd703a52f442
+  publication_branch: maintenance/custom-runtime-release
+  publication_pr: 16
+  publication_pr_url: https://github.com/svl33333/codex-with-chatgpt/pull/16
+  publication_pr_state: OPEN
+  publication_pr_head: 13c77fd2b2a3ea1adb69703cf1a1bd703a52f442
+  publication_verified_at: "2026-10-06T05:35:26.497Z"
 artifacts:
   - .harness/custom-runtime-release/00-workflow-resolution.md
   - .harness/custom-runtime-release/00-requirements-working.md
@@ -80,14 +87,14 @@ artifacts:
   - .harness/custom-runtime-release/04-test-summary.md
   - .harness/custom-runtime-release/04-implementation-log.md
 c2c:
-  checkpoint: IMPLEMENTATION_READY_FOR_PUSH_APPROVAL
-  review_stage: post_implementation
-  verdict: PASS
+  checkpoint: FINAL_REVIEW_READY_FOR_C2C
+  review_stage: final
+  verdict: null
   cycle: 3
   setup_mode: auto
   connector_name: "Codex with ChatGPT · custom-runtime-release · 2aa24f13"
   setup_status: connected_doctor_green_project_bound
-  last_action: PROCEED
+  last_action: REVIEW
   iteration: 4
   human_action_queue: []
   last_review: >-
@@ -100,6 +107,6 @@ c2c:
     C preservation, Q708 app-shell routing, .14 release consistency, privacy,
     and the TeamAI/publication boundaries remain intact.
 next:
-  action: Commit and push maintenance/custom-runtime-release to origin, publish the approved PR, verify the exact remote/PR state, then enter final review
+  action: Submit the published remote PR HEAD for independent C2C final-diff review and record final-review reconciliation; await merge approval if PASS
   blocked_on: null
-updated_at: "2026-10-06T05:32:44.956Z"
+updated_at: "2026-10-06T05:35:26.497Z"
