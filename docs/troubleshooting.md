@@ -36,16 +36,31 @@ Project (or switch long-chat) and continue there.
 Supported semantic ChatGPT surfaces for first-time setup and later repair:
 
 - Developer mode: https://chatgpt.com/#settings/Security
-- Plugins hub (manage existing connectors): https://chatgpt.com/plugins
-- Add a connector:
+- Plugins app shell (normal custom-MCP creation and connector management):
+  https://chatgpt.com/plugins
+- Normal creation route: open the app-shell plugin/customize surface, go to
+  `/plugins`, clear any inherited search/filter, choose **Add**, then **Create
+  a custom MCP server**. Settings → Plugins is management/recovery only.
+- Historical Add URL (compatibility/navigation hint only):
   https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins
 
 Prefer the plugin-hub Add → Create custom MCP server capability and verify that
-the creation form is actually usable. The deep Add URL above is only a bounded
-fallback observation; if it lands on an installed list, classify route drift
-and rediscover the semantic capability instead of declaring global
-unavailability. The active account/workspace policy, not the historical
-Security-page location, decides whether a Developer/custom-app gate exists.
+the creation form is actually usable. If the historical Add URL lands on an
+installed list or Settings, classify it as route drift and rediscover the
+semantic capability through the app shell instead of declaring global
+unavailability. This same route contract applies to first-time automatic
+setup, reconnect/recovery, and guided manual setup. No hidden storage,
+undocumented/private API, or plugin-creator workaround is a recovery path. The
+active account/workspace policy, not the historical Security-page location,
+decides whether a Developer/custom-app gate exists.
+
+Before an automatic consent warning, obtain the current exact-binding and
+account/ownership observation from the authenticated account surface and run
+`c2c consent verify-account -w <workspace> --observation-json <runtime-only-path>
+--json`. Continue only for `BOUND`; missing or conflicting account authority is
+`HUMAN_REQUIRED`. Then run `c2c consent prepare` and `c2c consent decide` with
+the short-lived challenge. The same ordering is used for first-time automatic
+setup and reconnect/recovery; guided manual setup remains human-required.
 
 Project display names are limited to 50 characters on the observed creation
 surface. Validate or deterministically normalize generated labels before

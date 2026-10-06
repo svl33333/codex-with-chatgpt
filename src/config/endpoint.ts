@@ -5,8 +5,12 @@ import { createHash } from "node:crypto";
 
 export const CHATGPT_DEVELOPER_MODE_URL = "https://chatgpt.com/#settings/Security";
 export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
+/** Normal semantic creation entry point; the app shell owns the route. */
+export const CHATGPT_CUSTOM_MCP_CREATION_URL = CHATGPT_PLUGINS_URL;
+/** Compatibility/navigation hint only; never creation authority or proof. */
 export const CHATGPT_CREATE_CONNECTOR_URL =
   "https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins";
+export const CHATGPT_CREATE_CONNECTOR_COMPATIBILITY_URL = CHATGPT_CREATE_CONNECTOR_URL;
 export const CHATGPT_PROJECT_DISPLAY_NAME_LIMIT = 50;
 export const APPROVED_A0_PROJECT_DISPLAY_NAME = "codex-with-chatgpt-a0-surface-compatibility";
 

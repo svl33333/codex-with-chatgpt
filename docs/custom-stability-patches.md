@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.12`
+- Custom version: `0.1.3-svl.14`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -29,6 +29,8 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | Conversation identity | `src/conversation/registry.ts` | Project, conversation, repository, work, stage, and role are bound together; mismatches fail closed. |
 | Endpoint metadata | `src/config/endpoint.ts`, `src/cli/index.ts` | Endpoint mode, fingerprint, repository, installation, and connector identity are persisted alongside existing endpoint state. |
 | Provisioning state | `src/provisioning/state.ts`, `src/cli/index.ts` | Machine-local, secret-free setup phases survive a new Codex session; live verification can advance them without chat acknowledgements. |
+| Consent policy | `src/connection/consent.ts`, `src/cli/index.ts`, `skill/SKILL.md` | The authenticated account surface establishes `ConnectionBinding.accountFingerprint` through `consent verify-account`; a ChatGPT unreviewed-MCP warning is then auto-confirmable only through runtime-owned `consent prepare`/`consent decide` after exact read-only binding, machine-verified account/ownership, exact scopes, and first-attempt terminalized one-shot challenge consumption; ambiguous consent remains human-required. |
+| ChatGPT creation surface | `src/provisioning/chatgpt-surface.ts`, `src/config/endpoint.ts`, `skill/SKILL.md` | The normal custom-MCP creation route is the plugin app shell (`/plugins` → clear inherited filter → Add → Create a custom MCP server). Settings is management/recovery only; a historical deep-link redirect is route drift and must recover semantically. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
 | CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
 | Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
@@ -53,6 +55,10 @@ source; a user chat acknowledgement is not.
 6. Project, conversation, stage, role, and repository mismatch is `BLOCKED`.
 7. Checkpoints contain identifiers and hashes, never OAuth tokens, cookies,
    pairing codes, or message bodies.
+8. A service-side warning is never accepted from text alone. Automatic consent
+   requires exact read-only binding, account, ownership, and scope evidence,
+   plus a runtime-owned challenge that is atomically consumed before
+   `AUTO_CONFIRM`; otherwise the operation remains human-required.
 
 ## Verification
 

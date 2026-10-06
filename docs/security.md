@@ -35,6 +35,8 @@
 | Checkpoint / resume dump | Session checkpoints store short protocol fields only (capped). Resume uses the existing chat or HANDOFF — no new protocol state, no log paste, no re-pairing. |
 | Pairing request confusion | Bound pairing sessions compare workspace, connector/installation, endpoint origin, OAuth request/client/redirect/resource/PKCE, and scopes before consuming; mismatches fail closed without consuming the valid session. |
 | Project surface confusion | Project creation, collection, settings, Instructions, reviewer composer, connector configuration, and OAuth pairing are separate semantic surfaces. Instructions are never sent through the reviewer composer. |
+| Consent replay / TOCTOU | `c2c consent prepare` registers a bounded non-secret challenge and `c2c consent decide` atomically consumes it before `AUTO_CONFIRM`; replay, expiry, changed binding/account/surface/scope, and concurrent second use fail closed. |
+| ChatGPT route drift | `/plugins` app-shell → clear inherited filter → Add → Create custom MCP server is the normal creation route. Settings is management/recovery-only; a historical deep-link redirect is recoverable route drift, not capability absence. |
 
 ## Token & scope design
 
@@ -81,6 +83,19 @@ Ephemeral pairing values are not persisted in repository files, checkpoints,
 logs, screenshots, fixtures, Project memory, or normal chat. Project display
 labels are limited to 50 characters and are never durable workspace identity;
 identity reconciliation uses machine-observed IDs and connector ownership.
+
+Automatic consent has a separate runtime authority. The expected account is
+read only from the machine-verified `ConnectionBinding.accountFingerprint`;
+legacy bindings without that field cannot auto-confirm and are never
+browser-backfilled. Before consent preparation, the authenticated
+ChatGPT/account surface must provide a current exact-binding observation to
+`c2c consent verify-account`; the runtime persists only the verified fingerprint
+and fails closed for missing, stale, mismatched, or caller-supplied authority.
+The challenge registry stores only an opaque id, binding digest, account
+fingerprint, timestamps, and consumed state; it never stores OAuth tokens,
+pairing values, cookies, endpoint URLs, DOM, or message bodies. A live challenge
+is terminalized on the first valid decision attempt, including a failed
+decision, so invalid evidence cannot be corrected and replayed.
 
 **V1 limitation**: client registrations and token hashes are file-based rather
 than OS-keychain-based. Raw tokens are never written anywhere. Keychain

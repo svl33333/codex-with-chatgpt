@@ -39,6 +39,7 @@ import {
 } from "../config/ui-prefs.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
+  CHATGPT_CUSTOM_MCP_CREATION_URL,
   CHATGPT_DEVELOPER_MODE_URL,
   CHATGPT_PLUGINS_URL,
   CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
@@ -77,6 +78,13 @@ import {
   writeConnectionBinding,
   type EndpointMode,
 } from "../connection/identity.js";
+import {
+  decideConnectorConsent,
+  establishMachineVerifiedAccountBinding,
+  prepareConnectorConsent,
+  type MachineVerifiedAccountObservation,
+  type ConnectorConsentObservation,
+} from "../connection/consent.js";
 import {
   PROVISIONING_PHASES,
   PROVISIONING_OUTCOMES,
@@ -651,7 +659,8 @@ program
     const results: string[] = [];
     const surface = {
       preferredRoute: "plugin-hub-custom-mcp",
-      fallbackRoutes: ["settings-custom-app", "authenticated-browser-profile"],
+      fallbackRoutes: ["authenticated-browser-profile"],
+      managementRoutes: ["settings-custom-app"],
       routePolicy: "semantic-capability",
       developerModePolicy: "account-workspace-observation",
       projectDisplayNameMaxLength: CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
@@ -761,6 +770,7 @@ program
         developerMode: string;
         plugins: string;
         createConnector: string;
+        legacyCreateConnector: string;
       };
     } = {
       needed: false,
@@ -771,7 +781,8 @@ program
       pages: {
         developerMode: CHATGPT_DEVELOPER_MODE_URL,
         plugins: CHATGPT_PLUGINS_URL,
-        createConnector: CHATGPT_CREATE_CONNECTOR_URL,
+        createConnector: CHATGPT_CUSTOM_MCP_CREATION_URL,
+        legacyCreateConnector: CHATGPT_CREATE_CONNECTOR_URL,
       },
     };
 
@@ -1237,6 +1248,153 @@ program
         say(`Connector：${data.connectorName ?? "未登録"}`);
         say(`Endpoint：${data.endpointMode}（${data.endpointFingerprint ?? "未登録"}）`);
       }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+// ---------------------------------------------------------------- runtime-owned consent
+
+const consentCommand = program
+  .command("consent")
+  .description("Prepare and decide the bounded runtime-owned ChatGPT consent check");
+
+consentCommand
+  .command("verify-account")
+  .description("Record machine-verified account authority for the current connection binding")
+  .option("-w, --workspace <path>")
+  .requiredOption("--observation-json <path>", "runtime-only authenticated account-surface observation")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; observationJson: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const raw = JSON.parse(fs.readFileSync(path.resolve(opts.observationJson), "utf8")) as {
+        source?: unknown;
+        ownershipResolved?: unknown;
+        accountIdentityResolved?: unknown;
+        freshness?: unknown;
+        observed?: Record<string, unknown>;
+        [key: string]: unknown;
+      };
+      const observed: Record<string, unknown> = raw.observed ?? raw;
+      const evidence: MachineVerifiedAccountObservation = {
+        source: raw.source === "authenticated-account-surface" ? raw.source : "unknown",
+        ownershipResolved: raw.ownershipResolved === true,
+        accountIdentityResolved: raw.accountIdentityResolved === true,
+        observed: {
+          workspace: typeof observed.workspace === "string" ? observed.workspace : "",
+          canonicalRepository: typeof observed.canonicalRepository === "string" ? observed.canonicalRepository : "",
+          installationId: typeof observed.installationId === "string" ? observed.installationId : "",
+          endpointMode: observed.endpointMode === "stable" || observed.endpointMode === "ephemeral" || observed.endpointMode === "local"
+            ? observed.endpointMode
+            : "local",
+          endpointFingerprint: typeof observed.endpointFingerprint === "string" ? observed.endpointFingerprint : "",
+          connectorName: typeof observed.connectorName === "string" ? observed.connectorName : "",
+          accountFingerprint: typeof observed.accountFingerprint === "string" ? observed.accountFingerprint : undefined,
+        },
+        freshness: raw.freshness === "current" || raw.freshness === "stale" ? raw.freshness : "unknown",
+      };
+      const result = establishMachineVerifiedAccountBinding({
+        workspaceId: workspace.id,
+        binding: readConnectionBinding(workspace.id),
+        evidence,
+      });
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, workspaceId: workspace.id, ...result }));
+        return;
+      }
+      say(`${result.action}: ${result.reason}`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+consentCommand
+  .command("prepare")
+  .description("Register a short-lived one-shot consent challenge")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const result = prepareConnectorConsent({
+        workspaceId: workspace.id,
+        binding: readConnectionBinding(workspace.id),
+        setupMode: readUiPrefs().setupMode,
+      });
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, workspaceId: workspace.id, ...result }));
+        return;
+      }
+      if (result.action === "READY") check(`同意チャレンジを準備しました（${result.challengeId}）`);
+      else say(`HUMAN_REQUIRED: ${result.reason}`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+consentCommand
+  .command("decide")
+  .description("Decide and atomically consume one observed consent challenge")
+  .option("-w, --workspace <path>")
+  .requiredOption("--challenge-id <id>")
+  .requiredOption("--observation-json <path>", "runtime-only structured browser/account observation")
+  .option("--explicit-c2c", "the current operation has explicit C2C intent", false)
+  .option("--json", "machine-readable output", false)
+  .action((opts: {
+    workspace?: string;
+    challengeId: string;
+    observationJson: string;
+    explicitC2c: boolean;
+    json: boolean;
+  }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const raw = JSON.parse(fs.readFileSync(path.resolve(opts.observationJson), "utf8")) as {
+        consentSurface?: unknown;
+        ownershipResolved?: unknown;
+        accountIdentityResolved?: unknown;
+        freshness?: unknown;
+        blockers?: ConnectorConsentObservation["blockers"];
+        observed?: Record<string, unknown>;
+        [key: string]: unknown;
+      };
+      const observed: Record<string, unknown> = raw.observed ?? raw;
+      const observation: ConnectorConsentObservation = {
+        consentSurface: raw.consentSurface === "chatgpt-unreviewed-mcp" ? raw.consentSurface : "unknown",
+        ownershipResolved: raw.ownershipResolved === true,
+        accountIdentityResolved: raw.accountIdentityResolved === true,
+        observed: {
+          workspace: typeof observed.workspace === "string" ? observed.workspace : "",
+          canonicalRepository: typeof observed.canonicalRepository === "string" ? observed.canonicalRepository : "",
+          installationId: typeof observed.installationId === "string" ? observed.installationId : "",
+          endpointMode: observed.endpointMode === "stable" || observed.endpointMode === "ephemeral" || observed.endpointMode === "local"
+            ? observed.endpointMode
+            : "local",
+          endpointFingerprint: typeof observed.endpointFingerprint === "string" ? observed.endpointFingerprint : "",
+          connectorName: typeof observed.connectorName === "string" ? observed.connectorName : "",
+          accountFingerprint: typeof observed.accountFingerprint === "string" ? observed.accountFingerprint : undefined,
+          scopes: Array.isArray(observed.scopes)
+            ? observed.scopes.filter((scope: unknown): scope is string => typeof scope === "string")
+            : [],
+        },
+        freshness: raw.freshness === "current" || raw.freshness === "stale" ? raw.freshness : "unknown",
+        challengeId: opts.challengeId,
+        blockers: raw.blockers,
+      };
+      const result = decideConnectorConsent({
+        workspaceId: workspace.id,
+        binding: readConnectionBinding(workspace.id),
+        setupMode: readUiPrefs().setupMode,
+        explicitC2CRequest: opts.explicitC2c,
+        challengeId: opts.challengeId,
+        evidence: observation,
+      });
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, workspaceId: workspace.id, ...result }));
+        return;
+      }
+      say(`${result.action}: ${result.reason}`);
     } catch (error) {
       handleCliError(error, opts.json);
     }

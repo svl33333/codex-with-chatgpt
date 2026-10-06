@@ -20,6 +20,28 @@ export type SurfaceOutcome =
   | "RECOVERABLE_FAILURE"
   | "REQUIRED_CAPABILITY_UNAVAILABLE";
 
+export type CustomMcpRouteStatus = "READY" | "ROUTE_DRIFT" | "HUMAN_REQUIRED" | "REQUIRED_CAPABILITY_UNAVAILABLE";
+
+/** Observable app-shell checkpoints for the supported custom-MCP creation path. */
+export interface CustomMcpRouteObservation {
+  surface: ChatGPTSurfaceId;
+  appShellVisible: boolean;
+  pluginsRouteVisible: boolean;
+  inheritedFilterCleared: boolean;
+  addVisible: boolean;
+  createCustomMcpVisible: boolean;
+  settingsRedirected?: boolean;
+  routeDrift?: boolean;
+  accountStatus?: SurfaceStatus;
+  workspaceStatus?: SurfaceStatus;
+}
+
+export interface CustomMcpRouteSelection {
+  status: CustomMcpRouteStatus;
+  recoverySurface?: "plugin-hub-custom-mcp";
+  reason: string;
+}
+
 export interface SurfaceObservation {
   surface: ChatGPTSurfaceId;
   routePreference: number;
@@ -62,6 +84,40 @@ function hasRecoverableFailure(observation: SurfaceObservation): boolean {
   ].some(Boolean);
 }
 
+function isCreationRouteDrift(observation: SurfaceObservation, capability: SurfaceCapability): boolean {
+  return capability === "create_app" && observation.surface === "settings-custom-app";
+}
+
+/**
+ * Classify the semantic app-shell creation route. Settings is a management
+ * surface only; a redirect there is recoverable route drift, never proof that
+ * custom MCP creation is unavailable.
+ */
+export function selectCustomMcpCreationRoute(observation: CustomMcpRouteObservation): CustomMcpRouteSelection {
+  if (observation.accountStatus === "human_boundary" || observation.workspaceStatus === "human_boundary") {
+    return { status: "HUMAN_REQUIRED", reason: "account or workspace security boundary is unresolved" };
+  }
+  const routeDrift = observation.routeDrift === true || observation.settingsRedirected === true || observation.surface === "settings-custom-app";
+  if (routeDrift) {
+    return {
+      status: "ROUTE_DRIFT",
+      recoverySurface: "plugin-hub-custom-mcp",
+      reason: "historical creation route landed on Settings; recover through the plugin app-shell",
+    };
+  }
+  if (
+    observation.surface === "plugin-hub-custom-mcp" &&
+    observation.appShellVisible &&
+    observation.pluginsRouteVisible &&
+    observation.inheritedFilterCleared &&
+    observation.addVisible &&
+    observation.createCustomMcpVisible
+  ) {
+    return { status: "READY", reason: "plugin app-shell exposes Add and Create custom MCP server" };
+  }
+  return { status: "REQUIRED_CAPABILITY_UNAVAILABLE", reason: "plugin app-shell does not expose the observable custom-MCP creation controls" };
+}
+
 /** Pick the highest-preference route whose account and workspace are verified. */
 export function selectSupportedSurface(
   observations: readonly SurfaceObservation[],
@@ -70,6 +126,7 @@ export function selectSupportedSurface(
   const ordered = [...observations].sort((left, right) => left.routePreference - right.routePreference);
   const usable = ordered.find(
     (observation) =>
+      !isCreationRouteDrift(observation, capability) &&
       observation.originStatus === "verified" &&
       observation.accountStatus === "available" &&
       observation.workspaceStatus === "available" &&
@@ -82,7 +139,7 @@ export function selectSupportedSurface(
   if (ordered.some(hasHumanBoundary)) {
     return { selected: null, capability, outcome: "HUMAN_BOUNDARY", reason: "surface requires an account or security decision" };
   }
-  if (ordered.some(hasRecoverableFailure)) {
+  if (ordered.some((observation) => hasRecoverableFailure(observation) || isCreationRouteDrift(observation, capability))) {
     return { selected: null, capability, outcome: "RECOVERABLE_FAILURE", reason: "supported surface is not currently verified" };
   }
   return {

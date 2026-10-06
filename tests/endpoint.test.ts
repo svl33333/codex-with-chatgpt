@@ -12,6 +12,9 @@ import {
   CHATGPT_PROJECT_DISPLAY_NAME_LIMIT,
   APPROVED_A0_PROJECT_DISPLAY_NAME,
   reclaimUserMessage,
+  CHATGPT_CREATE_CONNECTOR_COMPATIBILITY_URL,
+  CHATGPT_CUSTOM_MCP_CREATION_URL,
+  CHATGPT_PLUGINS_URL,
 } from "../src/config/endpoint.js";
 
 describe("connectorAction", () => {
@@ -72,6 +75,13 @@ describe("mcpUrlFromPublic", () => {
     expect(mcpUrlFromPublic("https://A.trycloudflare.com/")).toBe("https://a.trycloudflare.com/mcp");
     expect(mcpUrlFromPublic("https://a.trycloudflare.com/mcp")).toBe("https://a.trycloudflare.com/mcp");
     expect(normalizePublicUrl("https://A.trycloudflare.com/")).toBe("https://a.trycloudflare.com");
+  });
+});
+
+describe("ChatGPT custom-MCP route metadata", () => {
+  it("uses the plugin app shell as creation authority and labels the deep link as compatibility-only", () => {
+    expect(CHATGPT_CUSTOM_MCP_CREATION_URL).toBe(CHATGPT_PLUGINS_URL);
+    expect(CHATGPT_CREATE_CONNECTOR_COMPATIBILITY_URL).toContain("create-connector=true");
   });
 });
 

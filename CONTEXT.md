@@ -21,6 +21,15 @@
 - **Readiness proof**: Explicit account, workspace, repository, permission,
   Project, and current-message evidence required before a live binding can be
   classified as ready. Missing proof remains pending/recoverable.
+- **Consent guard**: A structured, machine-verifiable decision for the expected
+  ChatGPT connector warning. Warning text alone is never authority; automatic
+  confirmation requires explicit C2C/automatic context, the exact workspace
+  binding, resolved account and ownership, the runtime-owned read-only scope
+  set, and no login, CAPTCHA, unsupported-2FA, destructive, or ambiguous-account
+  boundary.
+- **Immutable runtime release**: A validated reviewed commit published under a
+  new non-rewritable custom tag. Its package version, provenance, and Skill
+  digest identify the same release; a TeamAI pin update is a separate action.
 
 ## Boundary decisions
 
@@ -28,3 +37,5 @@
 - A stale UI route is route drift, not global capability loss.
 - Reconciliation preserves the existing mutation checkpoints; compatibility
   outcomes are a higher-level classification.
+- A mutable custom-fork branch is not an approved runtime update; immutable tag
+  and review evidence are required before adoption.
