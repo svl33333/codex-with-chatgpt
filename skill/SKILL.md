@@ -104,10 +104,17 @@ whatever data it needs by itself.
 
 ## Current product compatibility
 
-- Prefer the semantic plugin-hub capability `create_app` (Add → Create custom
-  MCP server). Treat the historical deep settings route as a fallback
-  observation only; a redirect to an installed list is route drift, not proof
-  that custom MCP is unavailable.
+- Prefer the semantic plugin-hub capability `create_app`: use the visible
+  plugin/customize surface, open `/plugins`, clear any inherited search/filter,
+  choose **Add**, then **Create a custom MCP server**. `Settings -> Plugins` is
+  for management/recovery only, not normal creation.
+- Treat the historical deep settings route as a compatibility/navigation hint
+  only. If it redirects to Settings or an installed list, classify route drift
+  and recover through the app-shell surface; never treat that redirect alone as
+  proof that custom MCP is unavailable.
+- The same route contract applies to first-time automatic setup,
+  reconnect/recovery, and guided manual setup. Do not use hidden storage,
+  undocumented/private APIs, or the plugin-creator workflow as a workaround.
 - `developerModeEnabled` is a legacy machine preference. Do not block setup
   merely because it is absent or false; if the active account/workspace shows a
   current policy gate, preserve it as a Human Boundary and do not bypass it.
@@ -168,8 +175,8 @@ that close the tab, hide the window, or stall on the settings page.
 4. **URLs only** (same tab, `goto` — never hunt menus):
    - 開発者モード: `https://chatgpt.com/#settings/Security`
      (skip when `c2c prefs --json` has `developerModeEnabled: true`)
-   - プラグイン一覧: `https://chatgpt.com/plugins`
-   - プラグインを追加: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
+   - プラグイン app shell: `https://chatgpt.com/plugins` (normal creation and management surface)
+   - 旧 Add URL: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins` (compatibility/navigation hint only; recover through the app shell if it redirects)
    - 新しい会話 (long-chat only, and only if no saved chat): `https://chatgpt.com/`
    - Saved C2C chat: `conversation.chatUrl` / `session.url` (long-chat, or
      the chat already bound in THIS Codex conversation)
@@ -178,7 +185,8 @@ that close the tab, hide the window, or stall on the settings page.
    Never click Reconnect / Refresh on an existing connector. The old address is
    dead and that page hangs on "This site cannot be reached". When the address
    changed: Delete THIS workspace's `connectorName` only, then create it again
-   via the プラグインを追加 URL (same name, new Server URL). Do not put that public
+   via the plugin app-shell Add → Create custom MCP server route (same name,
+   new Server URL). Do not put that public
    address into Project instructions — write the connector **name** only.
 
 5. **Do not wait for 8 tools** on the settings page. "Connected" / authorize
@@ -333,8 +341,33 @@ the explicit C2C invocation itself authorizes the normal non-destructive
 workflow. Do not ask “作成してよい”, “一時接続を許可”, “起動してよい”, or
 “作成するを押してよい” between these steps.
 
+For the expected C2C connector only, a ChatGPT “Unreviewed MCP connector”
+warning is an automatic step when every guard is true. First obtain a
+runtime-only structured observation from the authenticated ChatGPT/account
+surface (exact binding, account/ownership result, and `freshness: current`) and
+run `c2c consent verify-account -w <workspace> --observation-json
+<runtime-only-account-observation> --json`; continue only when it returns
+`BOUND`. The command persists only the machine-verified
+`ConnectionBinding.accountFingerprint`; it never accepts a caller-supplied
+expected account or stores raw account material. Immediately before the
+warning, run `c2c consent prepare -w <workspace> --json`; it must return a
+short-lived challenge. Inspect the live app-shell form and write only a
+runtime-only structured consent observation (surface, exact binding,
+machine-verified account/ownership result, exact scopes, `freshness: current`,
+and blockers), then run `c2c consent decide -w <workspace> --challenge-id <id>
+--observation-json <runtime-only-path> --explicit-c2c --json`. The runtime
+derives expected binding, account authority, setup mode, and scopes; the
+browser adapter must never supply expected values. Continue immediately only
+for `AUTO_CONFIRM`. The challenge is atomically consumed before that result;
+replay, expiry, navigation, account/binding/scope changes, or concurrent
+second use are `HUMAN_REQUIRED`. Do not add an acknowledgement-only chat stop.
+This account-authority ordering is shared by first-time automatic setup and
+reconnect/recovery. Guided manual setup may collect the same runtime-only
+observation for diagnostics, but `setupMode: manual` remains
+`HUMAN_REQUIRED` and never auto-confirms consent.
+
 `HUMAN_WAITING` is reserved for ChatGPT/Cloudflare login, CAPTCHA, 2FA, an
-actual service-side explicit-consent screen, ownership or connector-identity
+unverified or unexpected consent surface, ownership or connector-identity
 ambiguity, destructive risk, an unset policy that genuinely needs the user's
 choice, or the documented two-failure transition to guided manual setup. A
 connector create, tunnel provision, pairing, browser action, or form submit by
@@ -387,7 +420,12 @@ chat reply.
      Reconnect a healthy matching connector. Only an explicit
      `connectorAction: "update"` for a changed endpoint may delete this
      workspace's owned connector before recreating it.
-   - まだない / update が必要と確認済み: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
+   - まだない / update が必要と確認済み: stay on the plugin app shell at
+     `https://chatgpt.com/plugins`, clear any inherited search/filter, choose
+     **Add**, then **Create a custom MCP server**. The historical URL
+     `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
+     is compatibility/navigation-only. If it redirects to Settings, classify
+     route drift and return to the app shell; never call that capability absence.
      Operate ONLY on `connectorName` from step 3:
      - If that exact name exists and the endpoint is unchanged: reuse it and
        perform zero connector mutations, including zero pairing.
@@ -494,9 +532,8 @@ do not wait for a completion message:
    skip this step.
 2. Ask them to open `https://chatgpt.com/plugins`. If the exact `connectorName`
    exists, delete only that connector. Never ask them to touch another workspace's connector.
-3. Ask them to open
-   `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
-   and create the exact `connectorName` with:
+3. On the plugin app shell, clear any inherited search/filter, choose **Add**,
+   then **Create a custom MCP server**, and create the exact `connectorName` with:
    - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
    - Server URL: the current `mcpUrl`
    - Authentication: OAuth
@@ -860,16 +897,16 @@ the previous public address is gone. Doctor already started a new one.
    - 開発者モード: skip `https://chatgpt.com/#settings/Security` when
      `developerModeEnabled` is true. If create/delete then says developer
      mode is required, open it, enable, `c2c prefs set --developer-mode`.
-   - プラグイン一覧（Delete 専用）: `https://chatgpt.com/plugins`
-   - プラグインを追加（Delete 後に必須）: `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
+   - プラグイン app shell（Delete と通常作成）: `https://chatgpt.com/plugins`
+   - 旧 Add URL は互換ナビゲーションヒントのみ。Settings にリダイレクトされたら route drift と記録し、フィルターをクリアして app shell の Add → Create custom MCP server に戻る。
 3. Operate ONLY on `chatgptRepair.connectorName`. Never touch another
    workspace's connector.
    - If that exact name exists on the plugins hub: **Delete** it. Confirm the
      delete if ChatGPT asks. **Never click Reconnect, Refresh, Connect, or
      Edit** on the old card — the old Server URL is dead and the page will
      hang on "This site cannot be reached".
-   - Then `goto` the プラグインを追加 URL and create that **same** `connectorName`
-     (do not invent a second name):
+   - Then use the app-shell Add → Create custom MCP server route and create that
+     **same** `connectorName` (do not invent a second name):
       - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
       - Server URL: `chatgptRepair.mcpUrl`
       - Authentication: OAuth

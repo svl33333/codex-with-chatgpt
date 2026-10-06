@@ -97,6 +97,23 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).not.toContain("承認してから続行");
   });
 
+  it("uses the app-shell custom-MCP route and runtime-owned consent decision", () => {
+    expect(normalizedSkill).toContain("clear any inherited search/filter");
+    expect(normalizedSkill).toContain("Create a custom MCP server");
+    expect(normalizedSkill).toContain("Settings -> Plugins");
+    expect(normalizedSkill).toContain("route drift");
+    expect(normalizedSkill).toContain("c2c consent verify-account");
+    expect(normalizedSkill).toContain("machine-verified `ConnectionBinding.accountFingerprint`");
+    expect(normalizedSkill).toContain("c2c consent prepare");
+    expect(normalizedSkill).toContain("c2c consent decide");
+    expect(normalizedSkill).toContain("--challenge-id <id>");
+    expect(normalizedSkill).toContain("--observation-json <runtime-only-path>");
+    expect(normalizedSkill).toContain("atomically consumed");
+    expect(normalizedSkill).toContain("first-time automatic setup");
+    expect(normalizedSkill).toContain("reconnect/recovery");
+    expect(normalizedSkill).toContain("guided manual setup");
+  });
+
   it("uses the exact message-keyed ReviewerProof production path", () => {
     expect(normalizedSkill).toContain("c2c reviewer-proof build");
     expect(normalizedSkill).toContain("--evidence-json <runtime-only-path>");

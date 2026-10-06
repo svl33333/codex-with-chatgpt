@@ -1,0 +1,105 @@
+schema_version: "1.1"
+workflow:
+  profile: codex-c2c-v2
+  spec_repository: https://github.com/svl33333/codex-c2c-workflow
+  spec_version: 2.4.0
+  spec_commit: 0069229049099c076a74ebb0c1797328ea8f8d3a
+  review_contract: schema/c2c-review-contract.json
+  resolver_validation_status: WORKFLOW_READY
+  direct_validator_status: passed
+  step: 6
+  stage: PR / Push Publication
+  status: RUNNING
+  step4_approval:
+    route: direct
+    artifact: .harness/custom-runtime-release/02-plan-draft.md
+    approved: true
+    approved_at: "2026-10-06T02:51:13.2231804Z"
+    source: explicit-current-user-instruction
+  last_completed_action: >-
+    The user explicitly approved the complete amended Q701-Q708 requirements.
+    Issue #15 was finalized through the authorized GitHub connector with the
+    Q708 contract and acceptance criteria 9-18, and the local Issue snapshot
+    was refreshed. The Step 3 plan was amended for Q708 surface routing plus
+    stateful one-shot consent challenges and authoritative account/ownership
+    identity after the prior C2C FIX_REQUIRED findings. The pinned C2C runtime
+    doctor is green and the canonical iteration-2 review returned PASS. The
+    user then explicitly approved the current plan at the Visual Plan approval
+    gate. The direct Step 4 route was recorded against the approved plan
+    artifact. Step 5 implementation and final validation were submitted for
+    post-implementation C2C review. The first post-implementation review
+    returned FIX_REQUIRED for account-authority establishment, failed-decision
+    challenge reuse, and incomplete negative-test coverage; remediation is
+    proceeding within the approved scope. Iteration 4 added the separate
+    machine-verified account-binding path, first-attempt challenge
+    terminalization, and complete negative matrix; focused 45/45 and full
+    289/289 validation, typecheck, build, and diff-check passed. The
+    post-implementation C2C re-review returned PASS. Step 5 is complete and
+    Push/PR publication was explicitly approved. The user then explicitly
+    resolved the publication context to origin
+    (svl33333/codex-with-chatgpt) under the authenticated svl33333 account;
+    recovery (XiaoDuoYa/codex-with-chatgpt) remains read/reference-only. The
+    exact origin, account, branch, origin/main base, and clean scope were
+    re-verified before authorized publication.
+issue:
+  number: 15
+  url: https://github.com/svl33333/codex-with-chatgpt/issues/15
+  title: Custom runtime release: reconcile .13 consent into Target C main
+  state: open
+  source: live-github-connector
+  snapshot: .harness/custom-runtime-release/01-issue-snapshot.md
+requirements_approval:
+  approved: true
+  approved_at: "2026-10-06T02:30:45.2292608Z"
+  source: explicit-current-user-instruction
+  artifact: .harness/custom-runtime-release/00-requirements-working.md
+  resolved_qids:
+    - Q701
+    - Q702
+    - Q703
+    - Q704
+    - Q705
+    - Q706
+    - Q707
+    - Q708
+  open_qids: []
+git:
+  branch: maintenance/custom-runtime-release
+  source_branch: main
+  base_branch: main
+  base_head: 1623df922bc5b8209e8bd797f392f9ac29e5c930
+  publication_remote: origin
+  publication_repository: svl33333/codex-with-chatgpt
+  publication_account: svl33333
+  publication_context_resolved_at: "2026-10-06T05:32:44.956Z"
+artifacts:
+  - .harness/custom-runtime-release/00-workflow-resolution.md
+  - .harness/custom-runtime-release/00-requirements-working.md
+  - .harness/custom-runtime-release/01-issue-snapshot.md
+  - .harness/custom-runtime-release/02-plan-draft.md
+  - .harness/custom-runtime-release/04-test-summary.md
+  - .harness/custom-runtime-release/04-implementation-log.md
+c2c:
+  checkpoint: IMPLEMENTATION_READY_FOR_PUSH_APPROVAL
+  review_stage: post_implementation
+  verdict: PASS
+  cycle: 3
+  setup_mode: auto
+  connector_name: "Codex with ChatGPT · custom-runtime-release · 2aa24f13"
+  setup_status: connected_doctor_green_project_bound
+  last_action: PROCEED
+  iteration: 4
+  human_action_queue: []
+  last_review: >-
+    Iteration-4 post-implementation C2C review returned PASS. The separate
+    authenticated-account-surface verify-account path establishes only the
+    exact machine-verified ConnectionBinding.accountFingerprint authority;
+    live challenges are terminalized before any decision; and the negative
+    matrix covers all approved binding, scope, blocker, expiry, replay,
+    changed-state, bounded-cleanup, and concurrency cases. Q701-Q708, Target
+    C preservation, Q708 app-shell routing, .14 release consistency, privacy,
+    and the TeamAI/publication boundaries remain intact.
+next:
+  action: Commit and push maintenance/custom-runtime-release to origin, publish the approved PR, verify the exact remote/PR state, then enter final review
+  blocked_on: null
+updated_at: "2026-10-06T05:32:44.956Z"

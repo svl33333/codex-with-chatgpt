@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyConnectionOutcome,
+  selectCustomMcpCreationRoute,
   selectSupportedSurface,
   type SurfaceObservation,
 } from "../src/provisioning/chatgpt-surface.js";
@@ -20,12 +21,13 @@ function observation(overrides: Partial<SurfaceObservation> = {}): SurfaceObserv
 }
 
 describe("ChatGPT surface selection", () => {
-  it("prefers the first verified route with the requested capability", () => {
+  it("does not treat Settings as the custom-MCP creation authority", () => {
     const result = selectSupportedSurface([
       observation({ routePreference: 2, surface: "settings-custom-app" }),
       observation({ routePreference: 1, routeDrift: true, capabilities: { create_app: "unavailable" } }),
     ]);
-    expect(result.selected?.surface).toBe("settings-custom-app");
+    expect(result.selected).toBeNull();
+    expect(result.outcome).toBe("RECOVERABLE_FAILURE");
   });
 
   it("classifies stale or unavailable routes as recoverable while a fallback is unverified", () => {
@@ -42,6 +44,40 @@ describe("ChatGPT surface selection", () => {
     expect(selectSupportedSurface([observation({ capabilities: { create_app: "unavailable" } })]).outcome).toBe(
       "REQUIRED_CAPABILITY_UNAVAILABLE"
     );
+  });
+});
+
+describe("semantic custom-MCP app-shell route", () => {
+  const ready = {
+    surface: "plugin-hub-custom-mcp" as const,
+    appShellVisible: true,
+    pluginsRouteVisible: true,
+    inheritedFilterCleared: true,
+    addVisible: true,
+    createCustomMcpVisible: true,
+    accountStatus: "available" as const,
+    workspaceStatus: "available" as const,
+  };
+
+  it("requires the app-shell, filter clearing, Add, and Create controls", () => {
+    expect(selectCustomMcpCreationRoute(ready)).toMatchObject({ status: "READY" });
+    expect(selectCustomMcpCreationRoute({ ...ready, inheritedFilterCleared: false }).status).toBe(
+      "REQUIRED_CAPABILITY_UNAVAILABLE"
+    );
+  });
+
+  it("classifies a Settings redirect as route drift with app-shell recovery", () => {
+    expect(selectCustomMcpCreationRoute({
+      ...ready,
+      surface: "settings-custom-app",
+      settingsRedirected: true,
+      addVisible: false,
+      createCustomMcpVisible: false,
+    })).toMatchObject({ status: "ROUTE_DRIFT", recoverySurface: "plugin-hub-custom-mcp" });
+  });
+
+  it("keeps account boundaries distinct from capability absence", () => {
+    expect(selectCustomMcpCreationRoute({ ...ready, accountStatus: "human_boundary" }).status).toBe("HUMAN_REQUIRED");
   });
 });
 
