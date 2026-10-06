@@ -108,6 +108,9 @@ import { reconcileProjectRuntime, verifyProjectSettingsSave } from "../provision
 import type { ProjectIdentityEvidence, ProjectSettingsConfirmation, ProjectSurfaceObservation } from "../provisioning/project.js";
 import { selectPairingStrategy, type PairingStrategy, type PairingStrategyOverride } from "../pairing/strategy.js";
 import { buildReviewerProof, validateReviewerProof, type ReviewerProof, type ReviewerProofIdentity, type ReviewerProofInput } from "../provisioning/reviewer-proof.js";
+import { createProductionJanitorDriver } from "../janitor/driver.js";
+import { applyCleanupPlan, correlateRescan, createPlanFromInventory, dryRunCleanupPlan, preflightApplyPlan, scanWithDriver } from "../janitor/service.js";
+import { listProtectionReferences, loadInventory, loadLatestApplyResult, loadLatestInventory, loadPlan, resolveMachineAccountFingerprint } from "../janitor/store.js";
 
 const program = new Command();
 
@@ -1489,6 +1492,127 @@ acceptUnusedWorkspaceOption(
   });
 
 // ---------------------------------------------------------------- session (ChatGPT conversation / Project memory)
+
+// ---------------------------------------------------------------- janitor (machine-wide ChatGPT resource maintenance)
+
+const janitor = acceptUnusedWorkspaceOption(
+  program
+    .command("janitor")
+    .description("Inventory and safely maintain ChatGPT Projects and connected resources")
+);
+
+janitor
+  .command("scan")
+  .description("Read a supported semantic surface and save a sanitized inventory")
+  .option("-w, --workspace <path>", "ignored; janitor is machine-wide")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { json: boolean }) => {
+    let driver: Awaited<ReturnType<typeof createProductionJanitorDriver>> | null = null;
+    try {
+      const accountFingerprint = resolveMachineAccountFingerprint();
+      driver = await createProductionJanitorDriver(accountFingerprint);
+      const snapshot = await scanWithDriver(driver, { accountFingerprint, protection: listProtectionReferences() });
+      if (opts.json) say(JSON.stringify({ ok: true, inventory: snapshot }));
+      else check(`Janitorインベントリを保存しました（${snapshot.resources.length}件）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    } finally {
+      if (driver) await driver.close();
+    }
+  });
+
+janitor
+  .command("plan")
+  .description("Create a reviewable machine-local plan from an inventory")
+  .option("-w, --workspace <path>", "ignored; janitor is machine-wide")
+  .option("--inventory-id <id>", "inventory ID (defaults to the newest snapshot)")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { inventoryId?: string; json: boolean }) => {
+    try {
+      const inventory = opts.inventoryId ? loadInventory(opts.inventoryId) : loadLatestInventory();
+      const plan = createPlanFromInventory(inventory);
+      const digest = plan.digest ?? "";
+      if (opts.json) say(JSON.stringify({ ok: true, plan, digest }));
+      else check(`Janitor計画を保存しました（digest ${digest}）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+janitor
+  .command("dry-run")
+  .description("Validate the edited plan and print its digest without surface mutation")
+  .option("-w, --workspace <path>", "ignored; janitor is machine-wide")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    try {
+      const plan = loadPlan();
+      const inventory = loadInventory(plan.inventoryId);
+      const report = dryRunCleanupPlan(plan, inventory, resolveMachineAccountFingerprint());
+      if (opts.json) say(JSON.stringify({ ok: true, ...report }));
+      else {
+        check(`Dry-run確認が完了しました（digest ${report.digest}）`);
+        say(`削除候補：${report.deleteTargets.map((entry) => `${entry.kind}:${entry.stableId}${entry.metadata.name ? ` (${entry.metadata.name})` : ""}`).join(", ") || "なし"}`);
+        say(`件数：keep=${report.counts.keep} unknown=${report.counts.unknown} protected=${report.counts.protected} stale=${report.counts.stale} ambiguous=${report.counts.ambiguous}`);
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+janitor
+  .command("apply")
+  .description("Apply exact human-reviewed deletes bound to one plan digest")
+  .option("-w, --workspace <path>", "ignored; janitor is machine-wide")
+  .requiredOption("--plan-digest <digest>")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { planDigest: string; json: boolean }) => {
+    let driver: Awaited<ReturnType<typeof createProductionJanitorDriver>> | null = null;
+    try {
+      const plan = loadPlan();
+      const inventory = loadInventory(plan.inventoryId);
+      const accountFingerprint = resolveMachineAccountFingerprint();
+      // Validate the digest, frozen inventory, and account before constructing the browser companion.
+      preflightApplyPlan(plan, inventory, opts.planDigest, accountFingerprint);
+      const warning = "Project deletion may remove related chats, files, and instructions.";
+      if (opts.json) say(JSON.stringify({ ok: true, warning, planDigest: opts.planDigest, preflight: "validated" }));
+      else say("警告：Project の削除は関連チャット、ファイル、指示を削除する可能性があります。");
+      driver = await createProductionJanitorDriver(accountFingerprint);
+      const result = await applyCleanupPlan(plan, inventory, opts.planDigest, accountFingerprint, driver);
+      if (opts.json) say(JSON.stringify({ ok: true, warning, result }));
+      else check(`Janitor適用結果を保存しました（${result.outcomes.length}件）`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    } finally {
+      if (driver) await driver.close();
+    }
+  });
+
+janitor
+  .command("rescan")
+  .description("Refresh the machine-wide inventory after an apply")
+  .option("-w, --workspace <path>", "ignored; janitor is machine-wide")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { json: boolean }) => {
+    let driver: Awaited<ReturnType<typeof createProductionJanitorDriver>> | null = null;
+    try {
+      const accountFingerprint = resolveMachineAccountFingerprint();
+      driver = await createProductionJanitorDriver(accountFingerprint);
+      const snapshot = await scanWithDriver(driver, { accountFingerprint, protection: listProtectionReferences() });
+      const plan = loadPlan();
+      const correlation = correlateRescan(snapshot, plan, loadLatestApplyResult());
+      if (opts.json) say(JSON.stringify({ ok: true, inventory: snapshot, ...correlation }));
+      else {
+        check(`Janitor再スキャンを保存しました（${snapshot.resources.length}件）`);
+        say(`repeat-safe=${correlation.repeatSafe}`);
+        for (const target of correlation.targets) say(`${target.kind}:${target.stableId} action=${target.plannedAction} status=${target.status}`);
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    } finally {
+      if (driver) await driver.close();
+    }
+  });
 
 const session = program
   .command("session")

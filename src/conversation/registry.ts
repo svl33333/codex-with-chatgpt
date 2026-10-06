@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { withProtectionFinalizationLease } from "../janitor/lease.js";
 
 export type ConversationStage = "planning" | "plan_review" | "pr_review" | "prototype_evaluation" | string;
 
@@ -38,7 +39,7 @@ function load(workspaceId: string): RegistryFile {
 }
 
 function save(workspaceId: string, registry: RegistryFile): void {
-  writeSecureJson(registryFile(workspaceId), registry);
+  withProtectionFinalizationLease(() => writeSecureJson(registryFile(workspaceId), registry));
 }
 
 export function readConversationBinding(

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { withProtectionFinalizationLease } from "../janitor/lease.js";
 
 export type ConversationMode = "long-chat" | "project";
 
@@ -89,7 +90,7 @@ export function readSession(workspaceId: string): SavedSession | null {
 }
 
 export function writeSession(workspaceId: string, session: SavedSession): SavedSession {
-  writeSecureJson(sessionFile(workspaceId), session);
+  withProtectionFinalizationLease(() => writeSecureJson(sessionFile(workspaceId), session));
   return session;
 }
 
@@ -97,7 +98,7 @@ export function normalizeProjectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.trim());
     if (parsed.hostname !== "chatgpt.com" && parsed.hostname !== "www.chatgpt.com") return null;
-    const match = parsed.pathname.match(/^\/g\/(g-p-[a-zA-Z0-9]+)\/project\/?$/);
+    const match = parsed.pathname.match(/^\/g\/(g-p-[a-zA-Z0-9-]+)\/project\/?$/);
     if (!match) return null;
     return `https://chatgpt.com/g/${match[1]}/project`;
   } catch {
@@ -108,7 +109,7 @@ export function normalizeProjectUrl(url: string): string | null {
 export function projectIdFromUrl(url: string): string | null {
   const normalized = normalizeProjectUrl(url);
   if (!normalized) return null;
-  return normalized.match(/\/g\/(g-p-[a-zA-Z0-9]+)\/project/)?.[1] ?? null;
+  return normalized.match(/\/g\/(g-p-[a-zA-Z0-9-]+)\/project/)?.[1] ?? null;
 }
 
 export function resolveConversation(session: SavedSession | null): ConversationView {
