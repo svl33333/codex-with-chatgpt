@@ -77,10 +77,14 @@ export class IgnoreRules {
   private noise: Ignore;
   private custom: Ignore;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, customPolicy?: string) {
     this.sensitive = ignore().add(SENSITIVE_PATTERNS);
     this.noise = ignore().add(NOISE_PATTERNS);
     this.custom = ignore();
+    if (customPolicy !== undefined) {
+      this.custom.add(customPolicy);
+      return;
+    }
     const c2cignore = path.join(workspaceRoot, ".c2cignore");
     try {
       if (fs.existsSync(c2cignore)) {

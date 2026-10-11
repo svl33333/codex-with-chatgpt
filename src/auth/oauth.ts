@@ -116,6 +116,7 @@ function pairingPage(opts: {
     "workspace.search": "Search this workspace",
     "git.read": "Read git status and diffs",
     "execution.read": "Read Codex execution summaries",
+    "github.issue.read": "Read public GitHub Issues for this workspace",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes

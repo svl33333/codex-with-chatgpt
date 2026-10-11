@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startBridge, type Bridge } from "../src/bridge/server.js";
+import { AuthStore } from "../src/auth/store.js";
 import { appendExecutionRecord } from "../src/execution/records.js";
 import { saveExecutionOutput } from "../src/execution/output.js";
 import { makeTmpDir, cleanup, write, makeGitRepo, git, isolateStateDir } from "./helpers.js";
@@ -13,6 +14,7 @@ let bridge: Bridge;
 let client: Client;
 let accessToken: string;
 let stateDir: string;
+let authStoreFile: string;
 
 function textOf(result: { content?: unknown }): string {
   const content = result.content as { type: string; text: string }[];
@@ -45,16 +47,20 @@ beforeAll(async () => {
   stateDir = isolateStateDir();
   root = makeTmpDir("mcp-ws");
   makeGitRepo(root);
+  git(root, "remote", "add", "canonical", "https://github.com/example/reviewer.git");
+  git(root, "config", "branch.main.remote", "canonical");
+  git(root, "config", "branch.main.merge", "refs/heads/main");
   write(root, "package.json", JSON.stringify({ name: "demo", scripts: { test: "vitest run" }, dependencies: { react: "^19.0.0" } }));
   write(root, ".env", "API_KEY=supersecret\n");
   // an uncommitted change so git_diff has content
   write(root, "src/index.ts", "export const answer = 43; // changed\n");
 
+  authStoreFile = path.join(makeTmpDir("auth"), "store.json");
   bridge = await startBridge({
     workspaceRoot: root,
     port: 0,
     persistRuntime: false,
-    authStoreFile: path.join(makeTmpDir("auth"), "store.json"),
+    authStoreFile,
   });
   const tokens = bridge.authStore.issueTokens({
     clientId: "it-client",
@@ -77,14 +83,17 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists the existing nine tools and three new read-only evidence tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       "execution_output",
       "execution_summary",
+      "git_compare",
       "git_diff",
+      "git_history",
       "git_status",
+      "github_issue",
       "list_directory",
       "read_file",
       "search_workspace",
@@ -95,6 +104,7 @@ describe("MCP tools over Streamable HTTP", () => {
     for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
       expect(names).not.toContain(forbidden);
     }
+    expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
 
     expectToolOutputSchema(tools, "workspace_info", ["workspaceId", "workspaceName", "projectType", "git"]);
     expectToolOutputSchema(tools, "list_directory", ["path", "entries", "total", "hasMore"]);
@@ -380,5 +390,80 @@ describe("MCP tools over Streamable HTTP", () => {
     expect(result.diff).not.toContain("src/public.txt");
 
     git(root, "reset", "--hard", "HEAD");
+  });
+});
+
+describe("MCP evidence scope and binding integration", () => {
+  async function connectWithScopes(scopes: string[], refresh = false) {
+    const clientId = "scope-fixture";
+    const issued = bridge.authStore.issueTokens({ clientId, scopes, resource: `${bridge.localBaseUrl()}/mcp` });
+    const reloaded = new AuthStore(bridge.workspace.id, { file: authStoreFile });
+    const persisted = reloaded.verifyAccessToken(issued.accessToken, `${bridge.localBaseUrl()}/mcp`);
+    expect(persisted.ok && persisted.record.scopes).toEqual(scopes);
+    const rotated = refresh ? bridge.authStore.refresh(issued.refreshToken!, clientId, `${bridge.localBaseUrl()}/mcp`) : null;
+    if (refresh) expect(rotated?.ok).toBe(true);
+    const token = rotated?.ok ? rotated.tokens.accessToken : issued.accessToken;
+    const scoped = new Client({ name: "scope-fixture", version: "1" });
+    await scoped.connect(new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } },
+    }));
+    return scoped;
+  }
+
+  it("returns structured local history and comparison with exact commit identity", async () => {
+    const head = git(root, "rev-parse", "HEAD").trim();
+    const history = structuredJsonOf<{ resolvedRef: string; commits: { sha: string }[] }>(await client.callTool({ name: "git_history", arguments: {} }));
+    expect(history.resolvedRef).toBe(head); expect(history.commits.at(-1)?.sha).toBe(head);
+    const comparison = structuredJsonOf<{ base: string; head: string; hasMore: boolean }>(await client.callTool({ name: "git_compare", arguments: { base: "HEAD", head: "HEAD" } }));
+    expect(comparison).toMatchObject({ base: head, head, hasMore: false });
+  });
+
+  it("denies Issue access to old persisted and refreshed legacy grants", async () => {
+    for (const refresh of [false, true]) {
+      const scoped = await connectWithScopes(["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"], refresh);
+      try {
+        const issue = await scoped.callTool({ name: "github_issue", arguments: { number: 21 } });
+        expect(issue.isError).toBe(true); expect(textOf(issue)).toContain("INSUFFICIENT_SCOPE");
+      } finally { await scoped.close(); }
+    }
+  });
+
+  it("permits explicitly scoped Issue reads while preserving other tool scope boundaries", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith("https://api.github.com/")) return originalFetch(input, options);
+      calls.push(url);
+      return Response.json({
+        number: 21, title: "fixture", state: "open", body: null, updated_at: "2026-10-07T11:59:58Z",
+        repository_url: "https://api.github.com/repos/example/reviewer", html_url: "https://github.com/example/reviewer/issues/21",
+      });
+    });
+    const scoped = await connectWithScopes(["github.issue.read", "offline_access"], true);
+    try {
+      const issue = structuredJsonOf<{ number: number; repository: string }>(await scoped.callTool({ name: "github_issue", arguments: { number: 21 } }));
+      expect(issue).toMatchObject({ number: 21, repository: "https://github.com/example/reviewer" });
+      const denied = await scoped.callTool({ name: "git_history", arguments: {} });
+      expect(denied.isError).toBe(true); expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
+      git(root, "remote", "set-url", "canonical", "https://github.com/foreign/reviewer.git");
+      const drifted = await scoped.callTool({ name: "github_issue", arguments: { number: 21 } });
+      expect(drifted.isError).toBe(true); expect(textOf(drifted)).toContain("REPOSITORY_BINDING_CHANGED");
+      expect(calls).toHaveLength(1);
+    } finally {
+      git(root, "remote", "set-url", "canonical", "https://github.com/example/reviewer.git");
+      await scoped.close(); transport.mockRestore();
+    }
+  });
+
+  it("rejects unknown arguments at the MCP boundary before Issue HTTP", async () => {
+    const response = await fetch(`${bridge.localBaseUrl()}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 97, method: "tools/call", params: { name: "github_issue", arguments: { number: 21, url: "https://attacker.invalid" } } }),
+    });
+    const result = await response.json() as { error?: { message: string }; result?: { isError: boolean; content?: unknown } };
+    expect(Boolean(result.error) || result.result?.isError === true).toBe(true);
+    expect(JSON.stringify(result)).toMatch(/unrecognized|Unrecognized|unknown|Unknown/);
   });
 });
