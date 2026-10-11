@@ -9,6 +9,7 @@ import { PairingManager, isPairingRequestBinding, type PairingRequestBinding } f
 import { EphemeralPairingHandoff, type PairingHandoffBinding } from "../pairing/handoff.js";
 import type { PairingStrategy } from "../pairing/strategy.js";
 import { createMcpServer } from "../mcp/server.js";
+import { createIssueEvidenceContext } from "../github/repository-evidence.js";
 import { createMcpHttpHandler } from "../mcp/http.js";
 import { CloudflaredQuickTunnel } from "../tunnel/cloudflared.js";
 import { CloudflaredNamedTunnel } from "../tunnel/cloudflared-named.js";
@@ -171,7 +172,8 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
-  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger }), logger);
+  const issueEvidence = createIssueEvidenceContext(workspace.root, workspace.id);
+  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger, issueEvidence }), logger);
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),

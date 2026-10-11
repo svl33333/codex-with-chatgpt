@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import { startBridge, type Bridge } from "../src/bridge/server.js";
 import { filterScopes } from "../src/auth/store.js";
@@ -42,7 +42,7 @@ class FakePublicTunnel implements TunnelProvider {
   }
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
   isolateStateDir();
   root = makeTmpDir("oauth-ws");
   write(root, "hello.txt", "hello oauth\n");
@@ -55,7 +55,7 @@ beforeAll(async () => {
   base = bridge.localBaseUrl();
 });
 
-afterAll(async () => {
+afterEach(async () => {
   await bridge.close();
   cleanup(root);
 });
@@ -94,7 +94,9 @@ async function authorizeWithPairing(
 
   // Test the production request-bound flow: the pairing session is minted only
   // after the OAuth request is visible and carries the exact request binding.
-  const effectiveScopes = filterScopes(scope === null ? undefined : scope);
+  const effectiveScopes = scope === null || scope.trim() === ""
+    ? ["workspace.read", "workspace.search", "git.read", "execution.read"]
+    : [...new Set(scope.split(/[\s+]+/).filter(Boolean))];
   const boundPairing = bridge.pairing.create({
     workspaceId: bridge.workspace.id,
     connectorId: bridge.workspace.id,
@@ -119,7 +121,7 @@ async function authorizeWithPairing(
   }
   const location = postResponse.headers.get("location");
   const code = location ? new URL(location).searchParams.get("code") : null;
-  return { code, location, status: postResponse.status };
+  return { code, location, page: html, status: postResponse.status };
 }
 
 async function exchangeToken(
@@ -317,14 +319,48 @@ describe("authorization + token flow", () => {
     expect(response.headers.get("location")).toContain("error=invalid_target");
   });
 
-  it("does not implicitly grant offline access when scope is omitted", async () => {
+  it.each([null, "", "   "])("grants only the four legacy read scopes for omitted or blank scope %j", async (scope) => {
+    const expected = ["workspace.read", "workspace.search", "git.read", "execution.read"];
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const { code } = await authorizeWithPairing(clientId, challenge, undefined, "no-offline", null);
+    const { code, page } = await authorizeWithPairing(clientId, challenge, undefined, "legacy-default", scope);
+    expect(page).not.toContain("Read public GitHub Issues");
     const token = await exchangeToken(clientId, code!, verifier);
     expect(token.status).toBe(200);
-    expect(token.body.scope).not.toContain("offline_access");
+    expect(token.body.scope.split(" ")).toEqual(expected);
     expect(token.body.refresh_token).toBeUndefined();
+    const stored = bridge.authStore.verifyAccessToken(token.body.access_token, `${base}/mcp`);
+    expect(stored.ok && stored.record.scopes).toEqual(expected);
+  });
+
+  it.each([
+    ["workspace.read offline_access", ["workspace.read", "offline_access"]],
+    ["github.issue.read offline_access", ["github.issue.read", "offline_access"]],
+  ])("keeps an explicitly consented grant unchanged through refresh: %s", async (scope, expected) => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const { code, page } = await authorizeWithPairing(clientId, challenge, undefined, "explicit-scope", scope);
+    expect(page?.includes("Read public GitHub Issues for this workspace")).toBe(expected.includes("github.issue.read"));
+    const token = await exchangeToken(clientId, code!, verifier);
+    expect(token.status).toBe(200);
+    expect(token.body.scope.split(" ")).toEqual(expected);
+    const refreshed = await fetch(`${base}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: clientId,
+        refresh_token: token.body.refresh_token,
+        scope: "workspace.read workspace.search git.read execution.read offline_access github.issue.read",
+      }),
+    });
+    expect(refreshed.status).toBe(200);
+    const rotated = await refreshed.json() as Record<string, string>;
+    expect(rotated.scope.split(" ")).toEqual(expected);
+    for (const accessToken of [token.body.access_token, rotated.access_token]) {
+      const stored = bridge.authStore.verifyAccessToken(accessToken, `${base}/mcp`);
+      expect(stored.ok && stored.record.scopes).toEqual(expected);
+    }
   });
 
   it("rejects a wrong pairing code", async () => {
@@ -532,5 +568,21 @@ describe("refresh token rotation", () => {
     });
     expect(response.status).toBe(400);
     expect((await response.json()).error).toBe("invalid_grant");
+  });
+});
+
+
+describe("explicit authorization scope selection", () => {
+  it("keeps omitted and blank requests at the legacy four-scope grant", () => {
+    for (const requested of [undefined, "", " \t "]) {
+      expect(filterScopes(requested)).toEqual(["workspace.read", "workspace.search", "git.read", "execution.read"]);
+    }
+  });
+
+  it("grants only explicitly requested supported scopes and rejects mixed unknown scopes", () => {
+    expect(filterScopes("github.issue.read")).toEqual(["github.issue.read"]);
+    expect(filterScopes("workspace.read+github.issue.read workspace.read")).toEqual(["workspace.read", "github.issue.read"]);
+    expect(filterScopes("workspace.read github.issue.read write.access")).toEqual([]);
+    expect(filterScopes("offline_access")).toEqual(["offline_access"]);
   });
 });

@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { SUPPORTED_SCOPES } from "../auth/store.js";
 import { getStateDir, readJsonIfExists } from "../config/paths.js";
 import type { SetupMode } from "../config/ui-prefs.js";
 import { writeConnectionBinding, type ConnectionBinding } from "./identity.js";
@@ -91,7 +90,14 @@ const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 15_000;
 const CHALLENGE_ID_PATTERN = /^c2c_consent_[A-Za-z0-9_-]{32}$/;
 
-const DEFAULT_EXPECTED_SCOPES = [...SUPPORTED_SCOPES];
+// New supported scopes require consent; they must not broaden auto-confirmation.
+const DEFAULT_EXPECTED_SCOPES = [
+  "workspace.read",
+  "workspace.search",
+  "git.read",
+  "execution.read",
+  "offline_access",
+];
 
 function human(reason: string): ConnectorConsentDecision {
   return { action: "HUMAN_REQUIRED", reason };

@@ -279,3 +279,53 @@ brief, re-read code through the connector, and resume at NEXT_EXPECTED_STEP.
 Be substantive: why, which file, what to test. No empty one-liners and
 no 40-step epics. Use C2C control messages.
 ```
+
+## Read-only reviewer evidence tools
+
+These tools supplement the existing workspace tools. They do not establish a
+canonical C2C verdict, migrate a workstream, or replace a workflow's independent
+GitHub Plugin requirements.
+
+| Tool | Scope | Strict arguments |
+| --- | --- | --- |
+| `github_issue` | `github.issue.read` | `{number}`, positive safe integer |
+| `git_history` | `git.read` | `{ref?, limit?}`, default HEAD/100, maximum 200 |
+| `git_compare` | `git.read` | `{base, head, limit?, offset?, max_bytes?, expected_evidence_id?}` |
+
+Unknown arguments are rejected. There is no caller-selected URL, repository,
+host, credential, shell command, fetch, or write operation.
+
+Issue results contain number, title, state, body (including explicit null),
+updatedAt, safe URL, repository, minimal repositoryBinding, fetchedAt and an
+untrusted-data note. Public PR-shaped Issue responses return only these fields.
+Errors distinguish rate limiting, restricted access, not-found-or-restricted,
+HTTP unavailability, redirect rejection, malformed/oversized responses, network
+failure, timeout and repository binding drift.
+
+History returns full resolved SHA, object parents, bounded subject/timestamp,
+safe changedPaths, the requested/resolved range and topological oldest-to-newest
+order. A limit+1 sentinel identifies truncation. Merge paths are observed against
+all real parents. At most 2,000 safe paths occur across a response; commit paths
+and endpoint inventory share that budget. Shallow boundaries preserve the real
+object parent IDs and mark missing ancestry; they never manufacture root commits.
+
+Comparison returns resolved base/head, all mergeBases, same/base-ancestor/
+head-ancestor/diverged relation, and ancestryComplete. An empty mergeBases list
+means no local common ancestor was found; when ancestryComplete is false it
+does not prove the histories are unrelated. History covers only head-side
+`base..head`; the patch compares the two endpoints, not merge-base to head.
+
+Diff pages use byte offsets, 1–256 KiB per page (default 64 KiB), and a 64 MiB
+aggregate cap. A Git/batch/cap failure is an error, never partial success.
+Offsets must be UTF-8 boundaries within the extent. At extent the terminal page
+is empty, hasMore=false and nextOffset=null. Every nonzero offset requires the
+previous evidenceId as expected_evidence_id. Identity binds resolved commits,
+physical Git identity, policy digest, safe inventory and patch digest. Mutable
+ref or filter changes produce EVIDENCE_CHANGED instead of reusing an old cursor.
+
+Collect coverage.start/end from zero to coverage.extent without gaps or overlaps,
+verify returnedBytes and diffDigest, and inspect every completeness field.
+hasMore=false reports only the end of this page sequence; it does not prove
+earlier pages were read. allPagesRetrieved is true only when one page itself
+covers the whole extent. Sensitive withholding, unsupported modes, shallow or
+missing objects, and history/path/metadata truncation remain separate limitations.

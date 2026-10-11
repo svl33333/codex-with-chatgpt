@@ -9,6 +9,15 @@ export const SUPPORTED_SCOPES = [
   "git.read",
   "execution.read",
   "offline_access",
+  "github.issue.read",
+] as const;
+
+// Supported capabilities must not become implicit grants when this list grows.
+export const DEFAULT_AUTHORIZATION_SCOPES = [
+  "workspace.read",
+  "workspace.search",
+  "git.read",
+  "execution.read",
 ] as const;
 
 export type Scope = (typeof SUPPORTED_SCOPES)[number];
@@ -281,7 +290,7 @@ export class AuthStore {
 }
 
 export function filterScopes(requested: string | undefined): string[] {
-  if (!requested || requested.trim() === "") return SUPPORTED_SCOPES.filter((scope) => scope !== "offline_access");
+  if (!requested || requested.trim() === "") return [...DEFAULT_AUTHORIZATION_SCOPES];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
   if (asked.some((scope) => !(SUPPORTED_SCOPES as readonly string[]).includes(scope))) return [];
   return [...new Set(asked)];

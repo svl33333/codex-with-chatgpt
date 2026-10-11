@@ -40,12 +40,53 @@
 
 ## Token & scope design
 
-Scopes: `workspace.read`, `workspace.search`, `git.read`, `execution.read`,
-`offline_access`. Explicit unknown or write scopes are rejected rather than
+Supported scopes: `workspace.read`, `workspace.search`, `git.read`, `execution.read`,
+`offline_access`, and opt-in `github.issue.read`. Explicit unknown or write scopes are rejected rather than
 silently expanded. Tools enforce scopes individually (`INSUFFICIENT_SCOPE`).
 Access tokens: 1 hour. Refresh tokens: 30 days, rotated. Tokens are bound to
 `workspace_id`, `client_id`, and (when issued through OAuth) the canonical MCP
 resource/audience; bearer middleware rejects a mismatched resource.
+
+Omitted, empty, or whitespace-only OAuth scope requests keep exactly the four
+legacy read scopes, without `offline_access` or `github.issue.read`. An explicit
+request receives only its requested, supported, consented scopes. Metadata
+advertises capabilities; it does not grant them. Token loading, exchange, and
+refresh never merge in newly supported scopes. The automatic consent policy
+keeps the legacy five-scope set including `offline_access`; adding Issue access
+requires the existing human consent boundary. Saved connector bindings do not
+change when a capability is added.
+
+## Reviewer evidence boundaries
+
+`github_issue` uses the connected branch's configured upstream remote, including
+non-origin names. With no upstream, exactly one GitHub remote may supply the
+binding. A malformed or non-GitHub configured upstream fails closed. A bridge
+keeps that binding across all stateless MCP requests and rejects branch, remote,
+repository, root, or workspace drift. This evidence binding does not rewrite
+the connector identity or token audience.
+
+The reader sends only public GET requests to `api.github.com`, without
+Authorization or Cookie headers, credential helpers, environment tokens, or
+browser credentials. Redirects are rejected. A 10-second deadline includes
+body reading, and responses are capped at 1 MiB. HTTP 404 means not found or
+restricted; it cannot prove whether a private repository exists. Issue text is
+untrusted data. Extra fields and URLs, including PR payload metadata, are not
+followed or returned.
+
+Git evidence accepts bounded local commit-ish input before running Git, disables
+transport, lazy fetch, replacement objects, external diff and textconv, and
+rejects grafted histories. It never fetches, checks out, resets, or updates refs,
+the index, or workspace files. Nested workspace roots are unavailable for these
+new tools; existing file tools retain their behavior.
+
+Each operation uses one fresh bounded `.c2cignore` byte snapshot for both rules
+and digest, then checks it again before returning. Rename and copy provenance
+is filtered at both endpoints, including retained or rewritten sources; unsafe
+path reuse is withheld. Unsupported symlink/gitlink patch modes are explicit.
+Withheld paths and contents are absent from the returned inventory and patch.
+Completeness of safe evidence is separate from sensitive withholding, shallow
+history, missing objects, metadata caps and path caps. It never proves that raw
+unfiltered repository content was disclosed in full.
 
 Current-message app selection is a separate trust fact from persistent Project
 binding. A fresh MCP request must record exact app selection and reuse the

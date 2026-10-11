@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { SUPPORTED_SCOPES } from "../src/auth/store.js";
+const LEGACY_AUTOCONSENT_SCOPES = ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"];
 import {
   clearConsentChallengeRegistry,
   connectorConsentBinding,
@@ -45,7 +45,7 @@ function context(overrides: Partial<ConnectorConsentContext> = {}): ConnectorCon
     accountIdentityResolved: true,
     expected,
     expectedAccountFingerprint: binding.accountFingerprint ?? null,
-    observed: { ...expected, accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
+    observed: { ...expected, accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES] },
     freshness: "current",
     challengeId: `c2c_consent_${"a".repeat(32)}`,
     ...overrides,
@@ -57,7 +57,7 @@ function observation(challengeId: string, overrides: Partial<ConnectorConsentObs
     consentSurface: "chatgpt-unreviewed-mcp",
     ownershipResolved: true,
     accountIdentityResolved: true,
-    observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
+    observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES] },
     freshness: "current",
     challengeId,
     ...overrides,
@@ -88,6 +88,18 @@ function runCliAsync(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: 
 }
 
 describe("runtime-owned connector consent policy", () => {
+  it("requires human consent when the supported Issue scope is newly requested", () => {
+    const observed = {
+      ...connectorConsentBinding(binding),
+      accountFingerprint: binding.accountFingerprint,
+      scopes: ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access", "github.issue.read"],
+    };
+    expect(determineConnectorConsentAction(context({ observed }))).toEqual({
+      action: "HUMAN_REQUIRED",
+      reason: "OAuth scopes are unexpected",
+    });
+  });
+
   it("automatically confirms only the exact current read-only C2C warning", () => {
     expect(determineConnectorConsentAction(context())).toEqual({
       action: "AUTO_CONFIRM",
@@ -101,12 +113,12 @@ describe("runtime-owned connector consent policy", () => {
     expect(determineConnectorConsentAction(context({ freshness: "stale" })).action).toBe("HUMAN_REQUIRED");
     expect(
       determineConnectorConsentAction(
-        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: "foreign", scopes: [...SUPPORTED_SCOPES] } })
+        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: "foreign", scopes: [...LEGACY_AUTOCONSENT_SCOPES] } })
       ).action
     ).toBe("HUMAN_REQUIRED");
     expect(
       determineConnectorConsentAction(
-        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES, "workspace.write"] } })
+        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES, "workspace.write"] } })
       ).action
     ).toBe("HUMAN_REQUIRED");
   });
@@ -130,7 +142,7 @@ describe("runtime-owned connector consent policy", () => {
     for (const [field, value] of Object.entries(dimensions)) {
       expect(
         determineConnectorConsentAction(
-          context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES], [field]: value } })
+          context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES], [field]: value } })
         ).action,
         field
       ).toBe("HUMAN_REQUIRED");
@@ -143,17 +155,17 @@ describe("runtime-owned connector consent policy", () => {
   it("rejects duplicate, missing, and write OAuth scopes", () => {
     expect(
       determineConnectorConsentAction(
-        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [SUPPORTED_SCOPES[0], SUPPORTED_SCOPES[0]] } })
+        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [LEGACY_AUTOCONSENT_SCOPES[0], LEGACY_AUTOCONSENT_SCOPES[0]] } })
       ).action
     ).toBe("HUMAN_REQUIRED");
     expect(
       determineConnectorConsentAction(
-        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: SUPPORTED_SCOPES.slice(1) } })
+        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: LEGACY_AUTOCONSENT_SCOPES.slice(1) } })
       ).action
     ).toBe("HUMAN_REQUIRED");
     expect(
       determineConnectorConsentAction(
-        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES, "workspace.write"] } })
+        context({ observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES, "workspace.write"] } })
       ).action
     ).toBe("HUMAN_REQUIRED");
   });
@@ -163,7 +175,7 @@ describe("runtime-owned connector consent policy", () => {
       consentSurface: "chatgpt-unreviewed-mcp",
       ownershipResolved: true,
       accountIdentityResolved: true,
-      observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
+      observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES] },
       freshness: "current",
       challengeId: `c2c_consent_${"b".repeat(32)}`,
     };
@@ -191,7 +203,7 @@ describe("runtime-owned connector consent policy", () => {
     const cases: Array<(challengeId: string) => ConnectorConsentObservation> = [
       (challengeId) => observation(challengeId, { freshness: "stale" }),
       (challengeId) => observation(challengeId, {
-        observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES, "workspace.write"] },
+        observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES, "workspace.write"] },
       }),
     ];
     for (const makeInvalidObservation of cases) {
@@ -385,7 +397,7 @@ describe("production consent challenge path", () => {
           endpointFingerprint: saved.endpointFingerprint,
           connectorName: saved.connectorName,
           accountFingerprint: saved.accountFingerprint,
-          scopes: [...SUPPORTED_SCOPES],
+          scopes: [...LEGACY_AUTOCONSENT_SCOPES],
         },
       })
     );
@@ -433,7 +445,7 @@ describe("production consent challenge path", () => {
       ownershipResolved: true,
       accountIdentityResolved: true,
       freshness: "current",
-      observed: { ...connectorConsentBinding(saved), accountFingerprint: saved.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
+      observed: { ...connectorConsentBinding(saved), accountFingerprint: saved.accountFingerprint, scopes: [...LEGACY_AUTOCONSENT_SCOPES] },
     }));
     const args = ["consent", "decide", "-w", workspaceRoot, "--challenge-id", challenge.challengeId, "--observation-json", evidencePath, "--explicit-c2c", "--json"];
     const results = await Promise.all([runCliAsync(args, env), runCliAsync(args, env)]);
