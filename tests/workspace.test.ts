@@ -2,12 +2,26 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Workspace, WorkspaceError } from "../src/workspace/manager.js";
+import { IgnoreRules } from "../src/workspace/ignore.js";
 import { makeTmpDir, cleanup, write } from "./helpers.js";
 
 let root: string;
 let outside: string;
 let ws: Workspace;
 let symlinksReady: boolean;
+
+describe("snapshot policy input compatibility", () => {
+  it("uses supplied policy bytes without replacing existing one-argument behavior", () => {
+    const policyRoot = makeTmpDir("ignore-snapshot");
+    try {
+      write(policyRoot, ".c2cignore", "on-disk.txt\n");
+      const existing = new IgnoreRules(policyRoot); const snapshot = new IgnoreRules(policyRoot, "snapshot.txt\n");
+      expect(existing.isSensitive("on-disk.txt")).toBe(true); expect(existing.isSensitive("snapshot.txt")).toBe(false);
+      expect(snapshot.isSensitive("on-disk.txt")).toBe(false); expect(snapshot.isSensitive("snapshot.txt")).toBe(true);
+      expect(snapshot.isSensitive(".env")).toBe(true); expect(new IgnoreRules(policyRoot, "").isSensitive("on-disk.txt")).toBe(false);
+    } finally { cleanup(policyRoot); }
+  });
+});
 
 beforeAll(() => {
   root = makeTmpDir("ws");

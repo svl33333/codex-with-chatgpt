@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
-import { runGit } from "../workspace/git.js";
+import { resolveWorkspaceRepository } from "../workspace/repository.js";
 import type { ChatGPTSurfaceId } from "../provisioning/chatgpt-surface.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
@@ -51,34 +51,8 @@ export function getInstallationIdentity(): InstallationIdentity {
   return created;
 }
 
-function normalizeRemote(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) return null;
-  const ssh = value.match(/^git@([^:]+):(.+)$/i);
-  if (ssh) return `https://${ssh[1].toLowerCase()}/${ssh[2].replace(/\.git$/i, "")}`;
-  try {
-    const url = new URL(value);
-    // Never persist embedded credentials or fragments from a remote URL.
-    url.username = "";
-    url.password = "";
-    url.hash = "";
-    url.search = "";
-    url.hostname = url.hostname.toLowerCase();
-    url.pathname = url.pathname.replace(/\/+$/, "").replace(/\.git$/i, "");
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return null;
-  }
-}
-
-/** Resolve a repository identity from git, omitting tokens embedded in remotes. */
 export function canonicalRepositoryFor(workspaceRoot: string): string {
-  const top = runGit(workspaceRoot, ["rev-parse", "--show-toplevel"]);
-  const repoRoot = top.ok && top.stdout.trim() ? top.stdout.trim() : workspaceRoot;
-  const remote = runGit(repoRoot, ["remote", "get-url", "origin"]);
-  const normalized = remote.ok ? normalizeRemote(remote.stdout) : null;
-  if (normalized) return normalized;
-  return `file:${path.resolve(repoRoot)}`;
+  return resolveWorkspaceRepository(workspaceRoot).repository;
 }
 
 export function endpointFingerprint(endpoint: string | null | undefined, mode: EndpointMode): string {
