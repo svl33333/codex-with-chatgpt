@@ -62,6 +62,16 @@ account/ownership observation from the authenticated account surface and run
 the short-lived challenge. The same ordering is used for first-time automatic
 setup and reconnect/recovery; guided manual setup remains human-required.
 
+`consent decide` also requires the current independently observed top-level
+`challengeId`; `--challenge-id` only identifies the registered request. Missing,
+malformed, or mismatched observation IDs fail closed and consume that request's
+one-shot attempt, so corrected evidence cannot replay it. Never fill observation
+JSON from prepare output or request parameters. This source has not demonstrated
+a live ChatGPT UI producer for that correlation. Until one is proven, leave
+auto-confirm fail closed at the normal service consent UI, then resume when
+service completion is observable without a chat acknowledgement. Successful
+synthetic fixtures are not evidence of a live UI recovery.
+
 Project display names are limited to 50 characters on the observed creation
 surface. Validate or deterministically normalize generated labels before
 submission; keep the durable workstream and connector identity separate from

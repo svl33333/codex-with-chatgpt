@@ -1379,7 +1379,7 @@ consentCommand
             : [],
         },
         freshness: raw.freshness === "current" || raw.freshness === "stale" ? raw.freshness : "unknown",
-        challengeId: opts.challengeId,
+        challengeId: typeof raw.challengeId === "string" ? raw.challengeId : "",
         blockers: raw.blockers,
       };
       const result = decideConnectorConsent({

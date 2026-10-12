@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   connectionOperationKey,
   reconcileConnection,
@@ -22,6 +25,8 @@ import {
   type RemoteMessageState,
 } from "../src/conversation/delivery.js";
 import { bindConversation, readConversationBinding } from "../src/conversation/registry.js";
+import { isAppSelectionVerifiedForIntent, readAppSelection, recordAppSelection } from "../src/conversation/app-selection.js";
+import { mergeSession, readSession, writeSession } from "../src/session/state.js";
 import { cleanup, git, isolateStateDir, makeGitRepo, makeTmpDir } from "./helpers.js";
 
 function binding(overrides: Partial<ConnectionBinding> = {}): ConnectionBinding {
@@ -337,6 +342,55 @@ describe("connection identity and connector reconciliation", () => {
     expect(adapter.deleteCalls).toBe(0);
     expect(adapter.connectors).toHaveLength(2);
   });
+
+  it("resumes a partially verified approved connection and the same selected message without recreating or resending", async () => {
+    const b = binding({ accountFingerprint: "synthetic-account", readOnlyRequired: true });
+    const firstAdapter = new FakeConnectors();
+    firstAdapter.createMode = "timeout-after-create";
+    firstAdapter.workspaceInfoFailuresRemaining = 2;
+    firstAdapter.verification = { accountFingerprint: b.accountFingerprint, readOnly: true };
+    const first = await reconcileConnection(b, firstAdapter);
+    expect(first.status).toBe("CONNECTION_WAITING");
+    expect(firstAdapter.createCalls).toBe(1);
+
+    const intent = { taskId: "resume-approved-task", iteration: 4, messageId: "resume-selected-message", text: "synthetic bounded task" };
+    const selection = {
+      workspaceId: b.workspaceId, targetWorkstream: "c2c-consent-temporary-codes", connectorName: b.connectorName,
+      intent, requestedApp: b.connectorName, selectionMethod: "composer" as const,
+    };
+    recordAppSelection({ ...selection, currentMessageAvailable: true, invocation: "pending", workspaceVerified: false });
+    writeSession(b.workspaceId, mergeSession(null, {
+      url: "https://chatgpt.com/c/synthetic-resume", taskId: intent.taskId, iteration: intent.iteration,
+      checkpoint: { protocolState: "EXECUTING", waitingFor: "none", nextExpectedStep: "verify current connection" },
+    }));
+
+    const resumedAdapter = new FakeConnectors();
+    resumedAdapter.connectors = [...firstAdapter.connectors];
+    resumedAdapter.verification = { ...firstAdapter.verification };
+    expect(readSession(b.workspaceId)?.checkpoint?.taskId).toBe(intent.taskId);
+    expect(isAppSelectionVerifiedForIntent(b.workspaceId, intent)).toBe(false);
+    const resumed = await reconcileConnection(b, resumedAdapter);
+    expect(resumed).toMatchObject({ status: "READY", phase: "REUSE", mutations: { create: 0, delete: 0 } });
+    expect(resumed.operationKey).toBe(first.operationKey);
+    expect(resumed.checkpoint.createAttempts).toBe(1);
+    recordAppSelection({ ...selection, currentMessageAvailable: true, invocation: "succeeded", workspaceVerified: true });
+    expect(readAppSelection(b.workspaceId, intent)?.messageKey).toBe(messageIdempotencyKey(intent));
+    expect(isAppSelectionVerifiedForIntent(b.workspaceId, intent)).toBe(true);
+
+    let sendCalls = 0;
+    const messages: MessageAdapter = {
+      async sendMessage() { sendCalls += 1; throw new Error("synthetic ambiguous transport"); },
+      async getMessageStatus() { return "accepted"; },
+    };
+    expect((await deliverMessage(intent, messages)).result).toBe("CONFIRMED");
+    writeSession(b.workspaceId, mergeSession(readSession(b.workspaceId), {
+      checkpoint: { protocolState: "EXECUTED_SENT", waitingFor: "GPT_REVIEW" },
+    }));
+    expect((await deliverMessage(intent, messages)).result).toBe("CONFIRMED");
+    expect(sendCalls).toBe(1);
+    expect(readSession(b.workspaceId)?.checkpoint).toMatchObject({ taskId: intent.taskId, protocolState: "EXECUTED_SENT", waitingFor: "GPT_REVIEW" });
+    expect(fs.readFileSync(path.join(stateDir, "messages", `${messageIdempotencyKey(intent)}.json`), "utf8")).not.toContain(intent.text);
+  });
 });
 
 describe("message delivery idempotency", () => {
@@ -349,12 +403,15 @@ describe("message delivery idempotency", () => {
   class FakeMessages implements MessageAdapter {
     status: RemoteMessageState = "missing";
     sendCalls = 0;
+    statusCalls = 0;
+    sendMode: "success" | "timeout" = "success";
     async sendMessage() {
       this.sendCalls++;
-      if (this.status === "accepted") return { remoteId: "remote-1" };
+      if (this.status === "accepted" && this.sendMode === "success") return { remoteId: "remote-1" };
       throw new Error("transport timeout");
     }
     async getMessageStatus() {
+      this.statusCalls++;
       return this.status;
     }
   }
@@ -374,9 +431,11 @@ describe("message delivery idempotency", () => {
   it("confirms a timeout that was accepted remotely without resend", async () => {
     const adapter = new FakeMessages();
     adapter.status = "accepted";
+    adapter.sendMode = "timeout";
     const result = await deliverMessage(intent, adapter);
     expect(result.result).toBe("CONFIRMED");
     expect(adapter.sendCalls).toBe(1);
+    expect(adapter.statusCalls).toBe(1);
   });
 
   it("blocks ambiguous delivery and does not blind resend", async () => {
@@ -401,6 +460,33 @@ describe("message delivery idempotency", () => {
   it("derives a deterministic key from task, iteration and message ID", () => {
     expect(messageIdempotencyKey(intent)).toBe(messageIdempotencyKey(intent));
     expect(messageIdempotencyKey(intent)).not.toBe(messageIdempotencyKey({ ...intent, iteration: 3 }));
+  });
+
+  it.each(["prepared", "sending", "ambiguous", "confirmed"] as const)("reconciles a saved %s delivery without blindly resending", async (state) => {
+    const key = messageIdempotencyKey(intent);
+    const file = path.join(stateDir, "messages", `${key}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, idempotencyKey: key, taskId: intent.taskId, iteration: intent.iteration,
+      messageId: intent.messageId, messageHash: createHash("sha256").update(intent.text).digest("hex").slice(0, 24),
+      state, sendAttempts: state === "prepared" ? 0 : 1, updatedAt: "2026-10-12T00:00:00.000Z",
+    }));
+    const adapter = new FakeMessages();
+    adapter.status = "accepted";
+    expect((await deliverMessage(intent, adapter)).result).toBe("CONFIRMED");
+    expect(adapter.sendCalls).toBe(state === "prepared" ? 1 : 0);
+    expect(adapter.statusCalls).toBe(state === "sending" || state === "ambiguous" ? 1 : 0);
+  });
+
+  it.each(["pending", "in_progress", "reasoning", "failed", "unknown", "missing"] as const)("rechecks a %s remote result without sending again", async (remoteState) => {
+    const adapter = new FakeMessages();
+    adapter.status = remoteState;
+    const first = await deliverMessage(intent, adapter);
+    const resumed = await deliverMessage(intent, adapter);
+    expect(first.result).toBe(remoteState === "failed" ? "BLOCKED" : "WAITING");
+    expect(resumed.result).toBe(first.result);
+    expect(adapter.sendCalls).toBe(1);
+    expect(adapter.statusCalls).toBe(2);
   });
 });
 

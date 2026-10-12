@@ -448,6 +448,10 @@ export function decideConnectorConsent(input: {
     // being corrected and replayed against the same one-shot authorization.
     writeAtomic(file, { ...record, consumed: true } satisfies PersistedConsentChallenge);
 
+    if (input.evidence.challengeId !== id) {
+      return human("consent observation challenge does not match the registered challenge");
+    }
+
     const binding = input.binding;
     if (!binding) return human("exact connection binding is unavailable");
     const accountFingerprint = binding.accountFingerprint;

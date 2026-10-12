@@ -114,6 +114,35 @@ describe("Codex-native Skill contract", () => {
     expect(normalizedSkill).toContain("guided manual setup");
   });
 
+  it("requires independent current-attempt correlation and keeps real codes out of durable records", () => {
+    for (const phrase of [
+      "independently observed `challengeId`",
+      "the CLI never fills it from `--challenge-id`",
+      "Do not copy the request parameter or `consent prepare` output",
+      "keep this auto-confirm path fail closed",
+      "Synthetic fixture success is not live UI or production capability evidence",
+      "current user chat or a transient tool response",
+      "internal `device_code`",
+      "Keep real values out of repository files, state, checkpoints, logs, hook context, receipts",
+      "existing logger/output sanitizer",
+      "platform may retain user-chat and tool-response history",
+    ]) {
+      expect(normalizedSkill).toContain(phrase);
+    }
+  });
+
+  it("limits the legacy loop without changing canonical remediation or reviewer authority", () => {
+    const protocol = fs.readFileSync(path.join(process.cwd(), "docs", "protocol.md"), "utf8").replace(/\s+/g, " ");
+    expect(normalizedSkill).toContain("For this legacy conversation loop only, respect maxIterations");
+    expect(normalizedSkill).toContain("legacy loop limit below does not apply to that remediation");
+    expect(normalizedSkill).toContain("FIX_REQUIRED autonomous repair, required verification and re-review");
+    expect(normalizedSkill).toContain("Runtime connection owner's responsibility");
+    expect(normalizedSkill).toContain("formal reviewer's independent evidence acquisition or receipt decision");
+    expect(normalizedSkill).toContain("do not add Runtime checks as new mandatory receipt fields or treat READY as PASS");
+    expect(protocol).toContain("Do not apply the legacy 12-iteration stop");
+    expect(protocol).toContain("Existing bounded OAuth, network, and resource retries are unchanged");
+  });
+
   it("uses the exact message-keyed ReviewerProof production path", () => {
     expect(normalizedSkill).toContain("c2c reviewer-proof build");
     expect(normalizedSkill).toContain("--evidence-json <runtime-only-path>");
