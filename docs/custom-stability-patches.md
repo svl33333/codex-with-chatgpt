@@ -78,6 +78,16 @@ verification additionally requires the user's ChatGPT session, connector
 authorization, and (for named endpoints) Cloudflare login; those credentials
 stay outside the repository and are not exercised by CI.
 
+Consent correlation additionally requires the independently observed top-level
+`challengeId` to equal the registered current attempt. The CLI never substitutes
+the request ID, and a failed correlation terminalizes that request without
+consuming another challenge. Matching strings and successful synthetic fixtures
+do not prove UI provenance. No live ChatGPT UI correlation producer is
+established here; copying prepare output or request parameters into observation
+JSON is prohibited. Until a trusted producer is demonstrated, the auto-confirm
+path fails closed at the service's normal consent UI. This source change does
+not establish release/adoption or production automatic-consent capability.
+
 ## Update procedure
 
 1. Inspect upstream release notes and diff the new base against the recorded

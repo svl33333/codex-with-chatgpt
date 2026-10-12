@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { EphemeralPairingHandoff } from "../src/pairing/handoff.js";
+import { sanitizeExecutionOutput } from "../src/execution/sanitize.js";
+import { Logger } from "../src/logger/index.js";
+import { cleanup, isolateStateDir } from "./helpers.js";
 
 const binding = {
   workspaceId: "workspace-c",
@@ -45,5 +50,32 @@ describe("ephemeral pairing handoff", () => {
     expect(handoff.consume({ ...binding, authorization: { ...authorization, clientId: "attacker-client" }, now: 4_002 }))
       .toEqual({ ok: false, reason: "authorization_mismatch" });
     expect(handoff.consume({ ...binding, authorization, now: 4_003 })).toEqual({ ok: true, pairingCode: "runtime-only-code" });
+  });
+
+  it("keeps synthetic pairing material in memory and redacts it from logs and output", () => {
+    const stateDir = isolateStateDir();
+    try {
+      const pairingCode = "ABCD-EFGH";
+      const handoff = new EphemeralPairingHandoff(10);
+      const issued = handoff.issue(binding, pairingCode, 5_000);
+      expect(JSON.stringify({ issued, inspected: handoff.inspect(5_001) })).not.toContain(pairingCode);
+      expect(fs.readdirSync(stateDir)).toEqual([]);
+      expect(new EphemeralPairingHandoff().consume({ ...binding, now: 5_002 })).toEqual({ ok: false, reason: "not_found" });
+
+      const internalValues = ["c2c_at_syntheticaccess", "c2c_rt_syntheticrefresh", "syntheticdevicecode0000", "syntheticcookie00000000"];
+      const message = `${pairingCode} ${internalValues[0]} ${internalValues[1]} device_code=${internalValues[2]} token=${internalValues[3]}`;
+      const logFile = path.join(stateDir, "synthetic.log");
+      new Logger({ file: logFile, console: false }).info(message);
+      const output = sanitizeExecutionOutput(message);
+      expect(output.allowed).toBe(true);
+      for (const value of [pairingCode, ...internalValues]) {
+        expect(fs.readFileSync(logFile, "utf8")).not.toContain(value);
+        expect(JSON.stringify(output)).not.toContain(value);
+      }
+      expect(handoff.consume({ ...binding, now: 5_011 })).toEqual({ ok: false, reason: "not_found" });
+    } finally {
+      cleanup(stateDir);
+      delete process.env.C2C_STATE_DIR;
+    }
   });
 });

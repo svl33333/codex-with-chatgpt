@@ -244,10 +244,56 @@ NEXT_EXPECTED_STEP:
 Independently review iteration 4 via git_diff and reply PLAN or DONE.
 ```
 
-## Loop limits
+## Legacy loop limits and canonical remediation
 
-`maxIterations` (default 12, configurable in `.c2c.json`). When reached, Codex
-pauses and asks the user whether to continue.
+`maxIterations` (default 12, configurable in `.c2c.json`) applies only to this
+legacy conversation protocol. When reached, Codex pauses and asks the user
+whether to continue the legacy loop. For a canonical `codex-c2c-v2` workstream,
+resolve the governing workflow and recorded pin/state instead: FIX_REQUIRED
+uses its autonomous remediation, required verification and re-review, and
+existing stop conditions. Do not apply the legacy 12-iteration stop or a new
+"continue?" acknowledgement to canonical remediation. Existing bounded OAuth,
+network, and resource retries are unchanged.
+
+## Approved connection and current-attempt continuity
+
+Continue an already authorized operation when its current service, origin,
+account, exact installation/workspace/repository/endpoint binding, and read-only
+scopes still match. Reuse existing connection, session, provisioning,
+current-message selection, and delivery state; after compact/resume, reconcile
+the live service before advancing. A healthy saved phase alone is not current
+proof. Reconcile prepared/sending/confirmed/ambiguous delivery by the same
+task/iteration/message identity; never blind-resend or re-pair just to resume.
+Unknown ownership, changed account/endpoint/scopes, unsupported authentication,
+or an unresolved service consent boundary retains the existing safe stop.
+Observable service completion resumes without another chat acknowledgement.
+
+The Runtime connection owner retains installation, endpoint, account, scope,
+and connection safety checks. Safe connectivity and task approval do not
+replace the formal reviewer's independent evidence acquisition or receipt
+decision. Use the canonical workflow for formal review and its Human Gates;
+do not add a decision engine, receipt field, or Runtime READY-to-PASS mapping.
+
+For automatic consent, `consent prepare` registers the current short-lived
+challenge; `consent decide` requires the independently observed top-level
+`challengeId` to match it. The CLI does not substitute the request ID. Missing,
+malformed, or mismatched observations terminalize the registered challenge and
+return HUMAN_REQUIRED; replay, TTL, atomic one-shot, binding/account, and exact
+scope protections still apply. A matching value is not proof of UI provenance.
+No live ChatGPT UI producer for the challenge correlation is established here.
+Never copy `--challenge-id` or prepare output into observation JSON to obtain
+AUTO_CONFIRM. Until independent correlation is demonstrated, fail closed at
+the normal service consent UI; synthetic fixtures do not prove live capability.
+
+Prefer automatic input of a current authorized attempt's user-facing C2C
+pairing code. If necessary, its full value may appear in the current user chat
+or a transient tool response. Delegate GitHub `user_code` and email-code
+handling to `github-cli-auth`; internal `device_code` and other credentials are
+excluded. Never copy real codes or credentials into state, logs, hook context,
+receipts, Issues/PRs/commits, review artifacts, shared documents, or fixtures.
+Reuse the memory-only handoff and existing sanitizer. Chat/tool history may be
+retained by the platform; this permission does not disable retention or approval
+review. Expired values are not reusable after resume.
 
 ## Boot Prompt
 

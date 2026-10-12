@@ -25,8 +25,10 @@ whatever data it needs by itself.
    Speak in terms of "ChatGPT への接続 / 安全な接続 / ペアリング". The only exception is the
    **guided manual ChatGPT setup** below: expose only the exact settings
    field labels/values the user must enter, without explaining internals.
-3. The pairing code is the ONLY credential you may ever type into a browser.
-   Never touch OAuth tokens, cookies, or session storage.
+3. For ChatGPT pairing, type only the current attempt's user-facing pairing code
+   into its verified Authorize form. Never touch OAuth tokens, cookies, or
+   session storage. Delegate GitHub authentication and its `user_code` or email
+   verification code to the portable `github-cli-auth` Skill.
 4. If something fails, run `c2c doctor` and repair silently. Only involve the user
    for logins, CAPTCHA, 2FA, explicit consent screens, or **guided manual
    ChatGPT setup** below — and then give them ONE action.
@@ -272,6 +274,14 @@ Before any workflow that can touch a connector or send a control message:
    verification. A healthy saved phase is reusable by a new Codex session;
    never use an acknowledgement-only chat reply as a synchronization primitive.
 
+These installation, endpoint, account, scope, and connection checks remain the
+Runtime connection owner's responsibility. They establish safe connectivity;
+they do not replace the formal reviewer's independent evidence acquisition or
+receipt decision. Task approval, current-message selection, and canonical
+review are distinct facts. Follow the resolved `codex-c2c-v2` workflow and its
+recorded pin for formal evidence, verdicts, remediation, and Human Gates; do
+not add Runtime checks as new mandatory receipt fields or treat READY as PASS.
+
 ## Daily update check
 
 At the START of every workflow below (before anything else), run these two
@@ -354,13 +364,23 @@ warning, run `c2c consent prepare -w <workspace> --json`; it must return a
 short-lived challenge. Inspect the live app-shell form and write only a
 runtime-only structured consent observation (surface, exact binding,
 machine-verified account/ownership result, exact scopes, `freshness: current`,
-and blockers), then run `c2c consent decide -w <workspace> --challenge-id <id>
+independently observed `challengeId`, and blockers), then run
+`c2c consent decide -w <workspace> --challenge-id <id>
 --observation-json <runtime-only-path> --explicit-c2c --json`. The runtime
 derives expected binding, account authority, setup mode, and scopes; the
 browser adapter must never supply expected values. Continue immediately only
 for `AUTO_CONFIRM`. The challenge is atomically consumed before that result;
 replay, expiry, navigation, account/binding/scope changes, or concurrent
 second use are `HUMAN_REQUIRED`. Do not add an acknowledgement-only chat stop.
+The observation's `challengeId` must match the registered current attempt;
+the CLI never fills it from `--challenge-id`. Missing, malformed, or mismatched
+observations fail closed and terminalize that registered challenge.
+Matching values alone do not prove an independent UI observation. This source
+does not establish a live ChatGPT UI producer for that correlation. Do not copy
+the request parameter or `consent prepare` output into an observation to make
+AUTO_CONFIRM succeed. Until a trusted producer is independently demonstrated,
+keep this auto-confirm path fail closed at the service's normal consent UI.
+Synthetic fixture success is not live UI or production capability evidence.
 This account-authority ordering is shared by first-time automatic setup and
 reconnect/recovery. Guided manual setup may collect the same runtime-only
 observation for diagnostics, but `setupMode: manual` remains
@@ -375,6 +395,24 @@ itself is never a HUMAN_WAITING reason.
 When the browser or MCP makes completion observable, resume immediately and
 persist the phase; never require 「完了」, 「承認」, or another acknowledgement-only
 chat reply.
+
+### Current-attempt temporary codes
+
+Prefer automatic input on the verified service/origin/account and current
+authorized attempt. If user input is necessary, the complete user-facing C2C
+pairing code may appear in the current user chat or a transient tool response.
+An expired or completed attempt never authorizes reusing its value. This
+exception does not include internal `device_code`, access/refresh tokens,
+cookies, passwords, recovery codes, client secrets, or other credentials; do
+not infer eligibility from a code's appearance. GitHub-specific handling stays
+with `github-cli-auth`.
+
+Keep real values out of repository files, state, checkpoints, logs, hook
+context, receipts, Issues/PRs/commits, review artifacts, shared documents,
+Project memory, and fixtures. Reuse the memory-only pairing handoff and the
+existing logger/output sanitizer. Tests use synthetic values only. The platform
+may retain user-chat and tool-response history; this display permission does
+not disable that retention or automatic approval review.
 
 ## Workflow: first-time setup（"Codex with ChatGPT を使って初期設定を完了"）
 
@@ -739,6 +777,12 @@ no 40-step epics. Use C2C control messages.
 
 ## Workflow: coding task（"Codex with ChatGPT を使って XXX を完了"）
 
+This section describes the legacy Runtime conversation loop. A canonical
+`codex-c2c-v2` workstream follows its resolved workflow and recorded state,
+including FIX_REQUIRED autonomous repair, required verification and re-review,
+and existing stop conditions. The legacy loop limit below does not apply to
+that remediation. Bounded OAuth, network, and resource retries remain bounded.
+
 Protocol states sent to ChatGPT: INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED).
 Local checkpoint states (session only, never a ChatGPT `STATE:` line):
 `INIT`, `PLAN_RECEIVED`, `EXECUTING`, `EXECUTED_LOCAL`, `EXECUTED_SENT`, `DONE`, `BLOCKED`.
@@ -861,7 +905,8 @@ If status is restricted, ignore it and review from git_diff.
    `c2c session set -w <ws> --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`
 7. ChatGPT reviews via MCP (`git_diff`, `read_file`, `test_status`,
    `execution_output`) and replies DONE / PLAN (next iteration) / BLOCKED.
-8. Loop. Respect maxIterations (`.c2c.json`, default 12). At the limit, pause and ask
+8. For this legacy conversation loop only, respect maxIterations (`.c2c.json`,
+   default 12). At the limit, pause and ask
    the user: "12 回の協働を完了しましたが、未解決の問題が残っています。続けますか？"
 9. On DONE: summarize the result to the user in plain language.
    `c2c session set -w <ws> --state DONE --clear-checkpoint`

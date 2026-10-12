@@ -97,6 +97,17 @@ pairing values, cookies, endpoint URLs, DOM, or message bodies. A live challenge
 is terminalized on the first valid decision attempt, including a failed
 decision, so invalid evidence cannot be corrected and replayed.
 
+The observation's top-level `challengeId` must come independently from the
+current consent attempt and equal the registered challenge. The CLI never
+fills it from the request's `--challenge-id`; missing, malformed, or mismatched
+values fail closed after that challenge is terminalized, without consuming a
+different observed challenge. A matching string alone does not prove its UI
+origin. A live ChatGPT UI correlation producer has not been established here.
+Do not copy prepare output or request parameters into observation JSON to
+obtain AUTO_CONFIRM. Until trusted independent correlation is demonstrated,
+this auto-confirm path stays fail closed at the normal service consent UI.
+Synthetic CLI/core fixtures do not demonstrate live UI or production capability.
+
 **V1 limitation**: client registrations and token hashes are file-based rather
 than OS-keychain-based. Raw tokens are never written anywhere. Keychain
 integration is a V2 item.

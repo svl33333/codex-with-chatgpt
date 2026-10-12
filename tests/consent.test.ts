@@ -159,28 +159,25 @@ describe("runtime-owned connector consent policy", () => {
   });
 
   it("requires the current binding account and never accepts a browser-derived expected account", () => {
-    const observation: ConnectorConsentObservation = {
-      consentSurface: "chatgpt-unreviewed-mcp",
-      ownershipResolved: true,
-      accountIdentityResolved: true,
-      observed: { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
-      freshness: "current",
-      challengeId: `c2c_consent_${"b".repeat(32)}`,
-    };
-    const prepared = prepareConnectorConsent({ workspaceId: "workspace-id", binding, setupMode: "auto", now: 1_000, ttlMs: 1_000 });
-    expect(prepared.action).toBe("READY");
-    expect(
-      decideConnectorConsent({
-        workspaceId: "workspace-id",
-        binding: { ...binding, accountFingerprint: "changed-account" },
-        setupMode: "auto",
-        explicitC2CRequest: true,
-        challengeId: prepared.challengeId!,
-        evidence: { ...observation, challengeId: prepared.challengeId! },
-        now: 1_500,
-      }).action
-    ).toBe("HUMAN_REQUIRED");
-    clearConsentChallengeRegistry("workspace-id");
+    const stateDir = isolateStateDir();
+    try {
+      const prepared = prepareConnectorConsent({ workspaceId: "workspace-id", binding, setupMode: "auto", now: 1_000, ttlMs: 1_000 });
+      expect(prepared.action).toBe("READY");
+      expect(
+        decideConnectorConsent({
+          workspaceId: "workspace-id",
+          binding: { ...binding, accountFingerprint: "changed-account" },
+          setupMode: "auto",
+          explicitC2CRequest: true,
+          challengeId: prepared.challengeId!,
+          evidence: observation(prepared.challengeId!),
+          now: 1_500,
+        }).action
+      ).toBe("HUMAN_REQUIRED");
+    } finally {
+      cleanup(stateDir);
+      delete process.env.C2C_STATE_DIR;
+    }
   });
 
   it("terminalizes a live challenge after the first invalid decision attempt", () => {
@@ -224,6 +221,33 @@ describe("runtime-owned connector consent policy", () => {
     clearConsentChallengeRegistry(workspaceId);
     cleanup(stateDir);
     delete process.env.C2C_STATE_DIR;
+  });
+
+  it("rejects missing or invalid observed IDs and never consumes a different registered challenge", () => {
+    const stateDir = isolateStateDir();
+    const workspaceId = "observed-challenge-correlation";
+    try {
+      const otherChallenge = prepareConnectorConsent({ workspaceId, binding, setupMode: "auto", now: 10_000, ttlMs: 10_000 });
+      for (const observedId of [undefined, null, 42, {}, "", "invalid", otherChallenge.challengeId]) {
+        const prepared = prepareConnectorConsent({ workspaceId, binding, setupMode: "auto", now: 10_000, ttlMs: 10_000 });
+        const challengeId = prepared.challengeId!;
+        expect(decideConnectorConsent({
+          workspaceId, binding, setupMode: "auto", explicitC2CRequest: true, challengeId,
+          evidence: observation(observedId as string), now: 10_500,
+        }).action).toBe("HUMAN_REQUIRED");
+        expect(decideConnectorConsent({
+          workspaceId, binding, setupMode: "auto", explicitC2CRequest: true, challengeId,
+          evidence: observation(challengeId), now: 10_600,
+        })).toMatchObject({ action: "HUMAN_REQUIRED", reason: "consent observation challenge was already consumed" });
+      }
+      expect(decideConnectorConsent({
+        workspaceId, binding, setupMode: "auto", explicitC2CRequest: true,
+        challengeId: otherChallenge.challengeId!, evidence: observation(otherChallenge.challengeId!), now: 10_700,
+      }).action).toBe("AUTO_CONFIRM");
+    } finally {
+      cleanup(stateDir);
+      delete process.env.C2C_STATE_DIR;
+    }
   });
 
   it("terminalizes stale binding and account attempts and bounds expiry/unknown/registry state", () => {
@@ -299,7 +323,7 @@ describe("runtime-owned connector consent policy", () => {
   });
 });
 
-describe("production consent challenge path", () => {
+describe("CLI consent challenge path with synthetic surface observations", () => {
   const dirs: string[] = [];
 
   afterEach(() => {
@@ -308,7 +332,7 @@ describe("production consent challenge path", () => {
     delete process.env.C2C_STATE_DIR;
   });
 
-  it("establishes account authority through the production CLI path before consent preparation", () => {
+  it("establishes account authority through the CLI before consent preparation", () => {
     const stateDir = isolateStateDir();
     const workspaceRoot = makeTmpDir("consent-account-workspace");
     const evidenceDir = makeTmpDir("consent-account-evidence");
@@ -373,6 +397,7 @@ describe("production consent challenge path", () => {
       evidenceDir,
       "observation.json",
       JSON.stringify({
+        challengeId: challenge.challengeId,
         consentSurface: "chatgpt-unreviewed-mcp",
         ownershipResolved: true,
         accountIdentityResolved: true,
@@ -407,6 +432,55 @@ describe("production consent challenge path", () => {
     expect(stateFiles).not.toMatch(/https?:|workspace\.write|token|cookie/i);
   });
 
+  it("refuses request-only, malformed, and mismatched observed challenge IDs without consuming another challenge", () => {
+    const stateDir = isolateStateDir();
+    const workspaceRoot = makeTmpDir("consent-correlation-workspace");
+    const evidenceDir = makeTmpDir("consent-correlation-evidence");
+    dirs.push(stateDir, workspaceRoot, evidenceDir);
+    makeGitRepo(workspaceRoot);
+    const workspace = new Workspace(workspaceRoot);
+    writeConnectionBinding(makeConnectionBinding({
+      workspaceId: workspace.id,
+      workspace: workspace.name,
+      workspaceRoot,
+      endpoint: "https://example.test/mcp",
+      endpointMode: "stable",
+      connectorName: "Codex with ChatGPT",
+      accountFingerprint: "account-verified-1",
+    }));
+    mergeUiPrefs({ setupMode: "auto" });
+    const env = { C2C_STATE_DIR: stateDir };
+    const saved = JSON.parse(fs.readFileSync(path.join(stateDir, "bindings", `${workspace.id}.json`), "utf8")) as ConnectionBinding;
+    const prepareChallenge = (): string => {
+      const prepared = runCli(["consent", "prepare", "-w", workspaceRoot, "--json"], env);
+      expect(prepared.status).toBe(0);
+      const challenge = JSON.parse(prepared.stdout) as { action: string; challengeId: string };
+      expect(challenge.action).toBe("READY");
+      return challenge.challengeId;
+    };
+    const otherChallengeId = prepareChallenge();
+    const decideChallenge = (challengeId: string, observedId: unknown) => {
+      const evidencePath = write(evidenceDir, "observation.json", JSON.stringify({
+        ...observation(challengeId),
+        challengeId: observedId,
+        requestId: challengeId,
+        observed: { ...connectorConsentBinding(saved), accountFingerprint: saved.accountFingerprint, scopes: [...SUPPORTED_SCOPES] },
+      }));
+      const decided = runCli(["consent", "decide", "-w", workspaceRoot, "--challenge-id", challengeId,
+        "--observation-json", evidencePath, "--explicit-c2c", "--json"], env);
+      expect(decided.status).toBe(0);
+      return JSON.parse(decided.stdout) as { action: string; reason: string };
+    };
+    for (const observedId of [undefined, null, 42, {}, "", "invalid", otherChallengeId]) {
+      const challengeId = prepareChallenge();
+      expect(decideChallenge(challengeId, observedId).action).toBe("HUMAN_REQUIRED");
+      expect(decideChallenge(challengeId, challengeId)).toMatchObject({
+        action: "HUMAN_REQUIRED", reason: "consent observation challenge was already consumed",
+      });
+    }
+    expect(decideChallenge(otherChallengeId, otherChallengeId).action).toBe("AUTO_CONFIRM");
+  });
+
   it("allows exactly one concurrent consumer to auto-confirm", async () => {
     const stateDir = isolateStateDir();
     const workspaceRoot = makeTmpDir("consent-concurrent-workspace");
@@ -429,6 +503,7 @@ describe("production consent challenge path", () => {
     const challenge = JSON.parse(prepared.stdout) as { challengeId: string };
     const saved = JSON.parse(fs.readFileSync(path.join(stateDir, "bindings", `${workspace.id}.json`), "utf8")) as ConnectionBinding;
     const evidencePath = write(evidenceDir, "observation.json", JSON.stringify({
+      challengeId: challenge.challengeId,
       consentSurface: "chatgpt-unreviewed-mcp",
       ownershipResolved: true,
       accountIdentityResolved: true,
