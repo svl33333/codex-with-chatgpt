@@ -8,6 +8,7 @@ import {
 } from "../src/connection/reconciler.js";
 import {
   canonicalRepositoryFor,
+  bindingMatches,
   endpointFingerprint,
   getInstallationIdentity,
   makeConnectionBinding,
@@ -102,14 +103,16 @@ describe("connection identity and connector reconciliation", () => {
   });
   afterEach(() => cleanup(stateDir));
 
-  it("persists one installation identity and strips credentials from repository remotes", () => {
+  it("persists one installation identity and refuses credential-bearing repository remotes", () => {
     const repo = makeTmpDir("identity-repo");
     makeGitRepo(repo);
     git(repo, "remote", "add", "origin", "https://user:secret@GitHub.com/Example/demo.git");
     const first = getInstallationIdentity();
     const second = getInstallationIdentity();
     expect(second.installationId).toBe(first.installationId);
-    expect(canonicalRepositoryFor(repo)).toBe("https://github.com/Example/demo");
+    expect(() => canonicalRepositoryFor(repo)).toThrow("AMBIGUOUS_REPOSITORY_REMOTE");
+    git(repo, "remote", "set-url", "origin", "https://github.com/Example/demo.git");
+    expect(canonicalRepositoryFor(repo)).toBe("https://github.com/example/demo");
     const saved = makeConnectionBinding({
       workspaceId: "workspace-a",
       workspace: "demo",
@@ -120,6 +123,20 @@ describe("connection identity and connector reconciliation", () => {
     writeConnectionBinding(saved);
     expect(readConnectionBinding("workspace-a")?.connectorName).toBe(saved.connectorName);
     cleanup(repo);
+  });
+
+  it("rejects the old binding when shared selection switches from origin to an upstream repository", () => {
+    const repo = makeTmpDir("upstream-binding"); makeGitRepo(repo);
+    try {
+      git(repo, "remote", "add", "origin", "https://github.com/example/fork");
+      const previous = makeConnectionBinding({ workspaceId: "shared-selector", workspace: "demo", workspaceRoot: repo });
+      git(repo, "remote", "add", "upstream", "https://github.com/example/source");
+      git(repo, "config", "branch.main.remote", "upstream"); git(repo, "config", "branch.main.merge", "refs/heads/main");
+      const current = makeConnectionBinding({ workspaceId: "shared-selector", workspace: "demo", workspaceRoot: repo });
+      expect(bindingMatches(previous, current)).toBe(false);
+      expect(previous.canonicalRepository).toBe("https://github.com/example/fork");
+      expect(current.canonicalRepository).toBe("https://github.com/example/source");
+    } finally { cleanup(repo); }
   });
 
   it("reuses an existing connector with zero mutations", async () => {

@@ -869,6 +869,23 @@ If status is restricted, ignore it and review from git_diff.
     decision the user must make.
     `c2c session set -w <ws> --protocol-state BLOCKED --waiting-for USER --known-issues "<short reason>"`
 
+## Required work product evidence
+
+For required work product evidence, independently determine a nonempty required
+file set from the Issue, plan, source and status. Call `list_work_product_manifest`
+with that exact set before and after retrieving all `read_file` pages, and
+again before the verdict under the existing cycle freshness rules. Require
+`complete: true`, terminal/full coverage, and matching workspace/worktree,
+full HEAD, raw index and file digests, all layer modes/statuses, policy and
+repository selection. The whole-response tool requires both `workspace.read`
+and `git.read`; refusal, limits, drift, unsupported modes/stages or missing
+files are incomplete evidence. A complete call does not guarantee freshness
+of other calls or determine the required scope. Include both rename paths.
+Raw worktree bytes and stage 0 bytes are SHA-256 identities; HEAD blobs are Git
+object IDs. Keep acquisition metadata outside the existing receipt entry
+fields. `local-only` repository selection cannot establish a GitHub review
+binding; acquire numeric repository IDs independently from live GitHub.
+
 ## Workflow: disconnect（"ChatGPT を切断"）
 
 1. `c2c unpair -w <workspace>` (revokes all tokens immediately).

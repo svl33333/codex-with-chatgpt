@@ -77,15 +77,18 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists the read-only workspace, manifest and Git evidence tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       "execution_output",
       "execution_summary",
+      "git_compare",
       "git_diff",
+      "git_history",
       "git_status",
       "list_directory",
+      "list_work_product_manifest",
       "read_file",
       "search_workspace",
       "test_status",
@@ -102,6 +105,7 @@ describe("MCP tools over Streamable HTTP", () => {
     expectToolOutputSchema(tools, "search_workspace", ["matches", "matchCount", "truncated", "engine"]);
     expectToolOutputSchema(tools, "git_status", ["isRepo", "branch", "staged", "unstaged", "untracked", "hidden"]);
     expectToolOutputSchema(tools, "git_diff", ["isRepo", "mode", "diff", "hasMore", "nextOffset"]);
+    expectToolOutputSchema(tools, "list_work_product_manifest", ["complete", "terminal", "requiredCount", "returnedCount", "entries", "identity", "modes"]);
     expectToolOutputSchema(tools, "test_status", ["available", "tests", "outputAvailable", "outputId"]);
     expectToolOutputSchema(tools, "execution_summary", ["records"]);
     expectToolOutputSchema(tools, "execution_output", ["action", "items", "text"]);
@@ -130,6 +134,31 @@ describe("MCP tools over Streamable HTTP", () => {
     const result = await client.callTool({ name: "read_file", arguments: { path: "hello.txt" } });
     const file = structuredJsonOf<{ content: string; totalLines: number }>(result);
     expect(file.content).toContain("Hello from Codex with ChatGPT!");
+  });
+
+  it("observes the exact workspace manifest and full local Git IDs over MCP", async () => {
+    const result = await client.callTool({ name: "list_work_product_manifest", arguments: { required_paths: ["hello.txt", "src/index.ts"] } });
+    const observed = structuredJsonOf<{ complete: boolean; identity: { root: string; head: string }; requiredPaths: string[]; entries: { path: string }[] }>(result);
+    expect(observed.complete).toBe(true); expect(observed.identity.root).toBe(process.platform === "win32" ? root.toLowerCase() : root);
+    expect(observed.identity.head).toBe(git(root, "rev-parse", "HEAD").trim());
+    expect(observed.requiredPaths).toEqual(["hello.txt", "src/index.ts"]);
+    expect(observed.entries.map((entry) => entry.path)).toEqual(observed.requiredPaths);
+    const history = jsonOf<{ resolvedRef: string }>(await client.callTool({ name: "git_history", arguments: {} }));
+    expect(history.resolvedRef).toBe(observed.identity.head);
+    const comparison = jsonOf<{ base: string; head: string; relation: string }>(await client.callTool({ name: "git_compare", arguments: { base: "HEAD", head: "HEAD" } }));
+    expect(comparison).toMatchObject({ base: observed.identity.head, head: observed.identity.head, relation: "same" });
+    const empty = structuredJsonOf<{ complete: boolean }>(await client.callTool({ name: "list_work_product_manifest", arguments: { required_paths: [] } }));
+    expect(empty.complete).toBe(false);
+  });
+
+  it.each([["workspace.read"], ["git.read"]])("requires both existing manifest scopes when the token has only %j", async (scopes) => {
+    const token = bridge.authStore.issueTokens({ clientId: "single-manifest-scope", scopes, resource: `${bridge.localBaseUrl()}/mcp` });
+    const limited = new Client({ name: "single-manifest-scope", version: "1" });
+    await limited.connect(new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token.accessToken}` } } }));
+    try {
+      const denied = await limited.callTool({ name: "list_work_product_manifest", arguments: { required_paths: ["hello.txt"] } });
+      expect(denied.isError).toBe(true); expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
+    } finally { await limited.close(); }
   });
 
   it("read_file denies .env with ACCESS_DENIED_SENSITIVE_FILE and no content", async () => {

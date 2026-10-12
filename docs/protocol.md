@@ -5,6 +5,53 @@ Data plane: MCP (ChatGPT pulls files, diffs, search results itself).
 
 Never mix the two: control messages carry state, never content.
 
+## Required work product acquisition
+
+`list_work_product_manifest({ required_paths: [...] })` observes an explicit,
+nonempty set of workspace-relative regular files. It requires both existing
+`workspace.read` and `git.read` scopes. The reviewer determines the required
+set independently from the Issue, plan, source and status; the returned set
+does not certify its own sufficiency. There is no directory expansion or
+pagination. The limits are 256 paths, 1 MiB per file/blob, 256 KiB policy,
+64 MiB index and 256 KiB for the entire serialized MCP response. Refusal,
+missing required files, unsupported modes/stages, read errors, drift or limits
+return `complete: false` with no successful partial entries.
+
+Each entry maps to existing receipt fields `path/status/head_blob/index_digest/
+worktree_digest/mode`. `head_blob` is the Git object ID; `index_digest` is
+SHA-256 of the stage 0 blob's raw bytes; `worktree_digest` is SHA-256 before
+any newline conversion. A null layer is directly observed as absent. Layer
+modes, full HEAD, physical workspace and actual worktree roots, Git directory/
+common-directory identity, raw index digest, policy identity and repository
+selection are acquisition metadata, not new receipt fields. Status compares
+raw layers and modes without executing Git filters; newline conversion can
+therefore differ from Git's filtered status. A staged deletion followed by
+recreation is represented as `staged_and_unstaged`. Include both paths of a
+rename in the required set.
+
+Connection and evidence share the upstream-first, otherwise unique eligible
+GitHub remote selector. Ambiguous/detached/unsafe associations are refused.
+`local-only` file identities establish no GitHub review binding. Repository
+numeric IDs still require live GitHub acquisition. Existing bindings are not
+automatically migrated when the selected repository changes.
+
+Retrieve all text pages separately through `read_file`. Directly reacquire a
+manifest of the same independently determined paths before and after those
+pages, and again before the verdict under the existing cycle freshness rules.
+Compare root/worktree, full HEAD, index, each raw digest/mode/status, policy,
+repository selection, scope and page coverage. Any drift or incomplete
+acquisition requires fresh evidence. A complete single call is a bounded
+observation, not an atomic snapshot or a freshness guarantee for other calls.
+It grants no content verdict or canonical workflow transition.
+
+`git_history` returns bounded full-ID local history. `git_compare` compares
+explicit local revisions and pages its diff with `nextOffset` and the returned
+`evidenceId` supplied as `expected_evidence_id`. Independently verify complete
+page coverage and completeness metadata. These read-only operations do not
+fetch missing objects or execute external diff/textconv/filter/hooks/fsmonitor.
+History/comparison require the workspace to be the Git worktree root, so a
+subtree connection cannot expose paths outside its workspace through them.
+
 ## States
 
 ```
