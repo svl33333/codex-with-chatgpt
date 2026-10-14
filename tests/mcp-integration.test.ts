@@ -58,7 +58,7 @@ beforeAll(async () => {
   });
   const tokens = bridge.authStore.issueTokens({
     clientId: "it-client",
-    scopes: ["workspace.read", "workspace.search", "git.read", "execution.read"],
+    scopes: ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"],
     resource: `${bridge.localBaseUrl()}/mcp`,
   });
   accessToken = tokens.accessToken;
@@ -350,6 +350,30 @@ describe("MCP tools over Streamable HTTP", () => {
     const allowed = await limitedClient.callTool({ name: "read_file", arguments: { path: "hello.txt" } });
     expect(allowed.isError ?? false).toBe(false);
     await limitedClient.close();
+  });
+
+  it.each([["workspace.read", "git.read"], ["offline_access"]])("does not add search or execution capabilities to an explicit %j grant", async (...scopes) => {
+    const narrow = bridge.authStore.issueTokens({ clientId: "explicit-narrow", scopes, resource: `${bridge.localBaseUrl()}/mcp` });
+    const narrowClient = new Client({ name: "explicit-narrow", version: "1" });
+    try {
+      await narrowClient.connect(new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), { requestInit: { headers: { authorization: `Bearer ${narrow.accessToken}` } } }));
+      for (const tool of [
+        { name: "search_workspace", arguments: { query: "answer" } },
+        { name: "execution_output", arguments: { action: "list" } },
+        ...(scopes.includes("workspace.read") ? [] : [{ name: "read_file", arguments: { path: "hello.txt" } }, { name: "git_status", arguments: {} }]),
+      ]) {
+        const denied = await narrowClient.callTool(tool);
+        expect(denied.isError, tool.name).toBe(true);
+        expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
+      }
+      if (scopes.includes("workspace.read")) {
+        expect((await narrowClient.callTool({ name: "read_file", arguments: { path: "hello.txt" } })).isError ?? false).toBe(false);
+        expect((await narrowClient.callTool({ name: "git_status", arguments: {} })).isError ?? false).toBe(false);
+        expect(narrow.refreshToken).toBeNull();
+      }
+    } finally {
+      await narrowClient.close();
+    }
   });
 
   it("git_diff over MCP excludes sensitive files like .npmrc and service-account*.json", async () => {

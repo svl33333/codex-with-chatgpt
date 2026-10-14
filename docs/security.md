@@ -47,6 +47,29 @@ Access tokens: 1 hour. Refresh tokens: 30 days, rotated. Tokens are bound to
 `workspace_id`, `client_id`, and (when issued through OAuth) the canonical MCP
 resource/audience; bearer middleware rejects a mismatched resource.
 
+An omitted or blank authorization scope request uses all five scopes above.
+The consent page displays those actual requested scopes, including continued
+access through `offline_access`; displaying the page alone issues no tokens.
+Explicit narrower requests remain unchanged. Malformed non-string scope
+inputs and requests containing unknown scopes use the existing `invalid_scope`
+refusal instead of falling back to the default.
+
+Existing access tokens and stored grants are never rewritten by this default.
+A `workspace.read git.read` grant has no refresh token and cannot search or
+read execution output. A narrower grant that explicitly includes
+`offline_access` can refresh only its original scope set. Rotation does not
+add scopes requested at the refresh endpoint. `offline_access` grants no MCP
+read, write, shell, test execution, commit, or administrative capability by
+itself; `execution.read` only reads allowed, sanitized saved output.
+
+Expanding an existing App requires the same App's supported OAuth
+reauthorization and actual provider consent, including login, MFA, CAPTCHA,
+and account selection when required. Preserve the App/workspace/repository/
+endpoint binding and verify the actual requested and effective scopes.
+If that provider flow is unavailable, record the limitation; do not create
+another App or modify stored credentials to bypass it. Synthetic OAuth and
+consent tests do not demonstrate a live grant or provider consent.
+
 Current-message app selection is a separate trust fact from persistent Project
 binding. A fresh MCP request must record exact app selection and reuse the
 delivery message idempotency identity; a previous successful invocation cannot

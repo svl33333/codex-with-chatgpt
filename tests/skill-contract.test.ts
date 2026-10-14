@@ -6,6 +6,27 @@ const skill = fs.readFileSync(path.join(process.cwd(), "skill", "SKILL.md"), "ut
 const normalizedSkill = skill.replace(/\s+/g, " ");
 
 describe("Codex-native Skill contract", () => {
+  it("requests five standard scopes without upgrading existing grants or bypassing provider consent", () => {
+    const authorization = normalizedSkill.split("## Reviewer authorization scopes")[1]?.split("## Daily update check")[0];
+    expect(authorization).toBeDefined();
+    for (const scope of ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"]) {
+      expect(authorization).toContain(`\`${scope}\``);
+    }
+    for (const requirement of [
+      "after actual provider consent",
+      "Preserve explicit narrower requests and existing grants",
+      "refresh do not upgrade a two-scope App",
+      "same App's supported OAuth reauthorization",
+      "login, MFA, CAPTCHA",
+      "without creating a replacement App",
+      "reading allowed sanitized saved output, never running a command",
+      "Keep unproven UI correlation fail closed",
+      "Preserve the recorded canonical pin",
+    ]) {
+      expect(authorization).toContain(requirement);
+    }
+  });
+
   it("keeps the automatic in-app browser setup flow", () => {
     for (const phrase of [
       "Prefer the built-in in-app browser (iab)",

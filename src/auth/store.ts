@@ -280,8 +280,10 @@ export class AuthStore {
   }
 }
 
-export function filterScopes(requested: string | undefined): string[] {
-  if (!requested || requested.trim() === "") return SUPPORTED_SCOPES.filter((scope) => scope !== "offline_access");
+export function filterScopes(requested: unknown): string[] {
+  if (requested === undefined) return [...SUPPORTED_SCOPES];
+  if (typeof requested !== "string") return [];
+  if (requested.trim() === "") return [...SUPPORTED_SCOPES];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
   if (asked.some((scope) => !(SUPPORTED_SCOPES as readonly string[]).includes(scope))) return [];
   return [...new Set(asked)];

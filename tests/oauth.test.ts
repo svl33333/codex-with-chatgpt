@@ -1,15 +1,23 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
 import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startBridge, type Bridge } from "../src/bridge/server.js";
-import { filterScopes } from "../src/auth/store.js";
+import { AuthStore, filterScopes } from "../src/auth/store.js";
+import { Logger } from "../src/logger/index.js";
 import type { TunnelProvider, TunnelStatus, TunnelDoctorReport } from "../src/tunnel/provider.js";
 import { makeTmpDir, cleanup, write, isolateStateDir, pkceVerifierAndChallenge } from "./helpers.js";
 
 let root: string;
 let bridge: Bridge;
 let base: string;
+let authStoreFile: string;
+let logFile: string;
+let stateDir: string;
 
 const REDIRECT_URI = "http://127.0.0.1:19999/callback";
+const STANDARD_REVIEWER_SCOPES = ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"];
 
 class FakePublicTunnel implements TunnelProvider {
   readonly name = "fake-public";
@@ -42,22 +50,29 @@ class FakePublicTunnel implements TunnelProvider {
   }
 }
 
-beforeAll(async () => {
-  isolateStateDir();
+beforeEach(async () => {
+  stateDir = isolateStateDir();
   root = makeTmpDir("oauth-ws");
+  authStoreFile = path.join(makeTmpDir("auth"), "store.json");
+  logFile = path.join(makeTmpDir("oauth-log"), "bridge.log");
   write(root, "hello.txt", "hello oauth\n");
   bridge = await startBridge({
     workspaceRoot: root,
     port: 0,
     persistRuntime: false,
-    authStoreFile: path.join(makeTmpDir("auth"), "store.json"),
+    authStoreFile,
+    logger: new Logger({ file: logFile }),
   });
   base = bridge.localBaseUrl();
 });
 
-afterAll(async () => {
+afterEach(async () => {
   await bridge.close();
   cleanup(root);
+  cleanup(path.dirname(authStoreFile));
+  cleanup(path.dirname(logFile));
+  cleanup(stateDir);
+  delete process.env.C2C_STATE_DIR;
 });
 
 async function registerClient(): Promise<string> {
@@ -94,7 +109,7 @@ async function authorizeWithPairing(
 
   // Test the production request-bound flow: the pairing session is minted only
   // after the OAuth request is visible and carries the exact request binding.
-  const effectiveScopes = filterScopes(scope === null ? undefined : scope);
+  const effectiveScopes = scope === null || scope.trim() === "" ? [...STANDARD_REVIEWER_SCOPES] : scope.split(" ");
   const boundPairing = bridge.pairing.create({
     workspaceId: bridge.workspace.id,
     connectorId: bridge.workspace.id,
@@ -119,7 +134,7 @@ async function authorizeWithPairing(
   }
   const location = postResponse.headers.get("location");
   const code = location ? new URL(location).searchParams.get("code") : null;
-  return { code, location, status: postResponse.status };
+  return { code, location, page: html, status: postResponse.status };
 }
 
 async function exchangeToken(
@@ -141,6 +156,29 @@ async function exchangeToken(
   return { status: response.status, body: (await response.json()) as Record<string, string> };
 }
 
+async function requestRefresh(clientId: string, refreshToken: string, scope?: string): Promise<{ status: number; body: Record<string, string> }> {
+  const response = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId, ...(scope ? { scope } : {}) }),
+  });
+  return { status: response.status, body: (await response.json()) as Record<string, string> };
+}
+
+describe("scope input boundaries", () => {
+  it.each([undefined, "", " \t "])("uses the five standard scopes for omitted or blank input %j", (scope) => {
+    expect(filterScopes(scope)).toEqual(STANDARD_REVIEWER_SCOPES);
+  });
+
+  it.each([null, false, 0, ["workspace.read"], { scope: "workspace.read" }, "workspace.read workspace.write"])("rejects malformed or unknown scope input %j", (scope) => {
+    expect(filterScopes(scope)).toEqual([]);
+  });
+
+  it("preserves explicit narrow scopes and normalizes supported duplicates", () => {
+    expect(filterScopes("workspace.read git.read workspace.read")).toEqual(["workspace.read", "git.read"]);
+  });
+});
+
 describe("discovery metadata", () => {
   it("serves protected resource metadata", async () => {
     const response = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
@@ -156,6 +194,7 @@ describe("discovery metadata", () => {
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);
     expect(body.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(body.registration_endpoint).toContain("/oauth/register");
+    expect(body.scopes_supported).toEqual(STANDARD_REVIEWER_SCOPES);
   });
 });
 
@@ -317,14 +356,83 @@ describe("authorization + token flow", () => {
     expect(response.headers.get("location")).toContain("error=invalid_target");
   });
 
-  it("does not implicitly grant offline access when scope is omitted", async () => {
+  it.each([null, "", " \t "])("requests and displays five scopes before issuing an approved default grant %j", async (scope) => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
-    const { code } = await authorizeWithPairing(clientId, challenge, undefined, "no-offline", null);
+    const { code, page } = await authorizeWithPairing(clientId, challenge, undefined, "standard-scopes", scope);
+    for (const label of ["Read files in this workspace", "Search this workspace", "Read git status and diffs", "Read Codex execution summaries", "Stay connected between sessions"]) {
+      expect(page).toContain(`<li>${label}</li>`);
+    }
     const token = await exchangeToken(clientId, code!, verifier);
     expect(token.status).toBe(200);
-    expect(token.body.scope).not.toContain("offline_access");
+    expect(token.body.scope.split(" ")).toEqual(STANDARD_REVIEWER_SCOPES);
+    expect(token.body.refresh_token).toMatch(/^c2c_rt_/);
+    const standard = new Client({ name: "oauth-standard", version: "1" });
+    try {
+      await standard.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token.body.access_token}` } } }));
+      for (const tool of [
+        { name: "read_file", arguments: { path: "hello.txt" } },
+        { name: "search_workspace", arguments: { query: "hello" } },
+        { name: "git_status", arguments: {} },
+        { name: "execution_output", arguments: { action: "list" } },
+      ]) {
+        expect((await standard.callTool(tool)).isError ?? false, tool.name).toBe(false);
+      }
+    } finally {
+      await standard.close();
+    }
+  });
+
+  it("does not issue tokens from a consent page before pairing completes", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.search = new URLSearchParams({ client_id: clientId, redirect_uri: REDIRECT_URI, response_type: "code", code_challenge: challenge, code_challenge_method: "S256" }).toString();
+    const countBefore = bridge.authStore.tokenCount();
+    const page = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Stay connected between sessions");
+    expect(bridge.authStore.tokenCount()).toBe(countBefore);
+  });
+
+  it("rejects repeated scope query values through the existing invalid_scope response", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.search = new URLSearchParams({ client_id: clientId, redirect_uri: REDIRECT_URI, response_type: "code", code_challenge: challenge, code_challenge_method: "S256" }).toString();
+    authorizeUrl.searchParams.append("scope", "workspace.read");
+    authorizeUrl.searchParams.append("scope", "git.read");
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("error=invalid_scope");
+  });
+
+  it("keeps an explicit two-scope grant narrow on reuse and store reload without offline access", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const { code, page } = await authorizeWithPairing(clientId, challenge, undefined, "narrow-scopes", "workspace.read git.read");
+    expect(page).not.toContain("Stay connected between sessions");
+    const token = await exchangeToken(clientId, code!, verifier);
+    expect(token.status).toBe(200);
+    expect(token.body.scope).toBe("workspace.read git.read");
     expect(token.body.refresh_token).toBeUndefined();
+    const reloaded = new AuthStore(bridge.workspace.id, { file: authStoreFile });
+    const verified = reloaded.verifyAccessToken(token.body.access_token, `${base}/mcp`);
+    expect(verified.ok && verified.record.scopes).toEqual(["workspace.read", "git.read"]);
+    const limited = new Client({ name: "oauth-narrow", version: "1" });
+    try {
+      await limited.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token.body.access_token}` } } }));
+      for (const tool of [{ name: "read_file", arguments: { path: "hello.txt" } }, { name: "git_status", arguments: {} }]) {
+        expect((await limited.callTool(tool)).isError ?? false).toBe(false);
+      }
+      for (const tool of [{ name: "search_workspace", arguments: { query: "hello" } }, { name: "execution_output", arguments: { action: "list" } }]) {
+        const denied = await limited.callTool(tool);
+        expect(denied.isError).toBe(true);
+        expect(JSON.stringify(denied.content)).toContain("INSUFFICIENT_SCOPE");
+      }
+    } finally {
+      await limited.close();
+    }
   });
 
   it("rejects a wrong pairing code", async () => {
@@ -502,21 +610,68 @@ describe("refresh token rotation", () => {
     const { code } = await authorizeWithPairing(clientId, challenge, undefined);
     const initial = await exchangeToken(clientId, code!, verifier);
 
-    const refresh = async (refreshToken: string): Promise<{ status: number; body: Record<string, string> }> => {
-      const response = await fetch(`${base}/oauth/token`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId }),
-      });
-      return { status: response.status, body: (await response.json()) as Record<string, string> };
-    };
-
-    const rotated = await refresh(initial.body.refresh_token);
+    const rotated = await requestRefresh(clientId, initial.body.refresh_token);
     expect(rotated.status).toBe(200);
     expect(rotated.body.refresh_token).not.toBe(initial.body.refresh_token);
+    expect(rotated.body.scope.split(" ")).toEqual(STANDARD_REVIEWER_SCOPES);
 
-    const replayed = await refresh(initial.body.refresh_token);
+    const replayed = await requestRefresh(clientId, initial.body.refresh_token);
     expect(replayed.status).toBe(400);
+  });
+
+  it("preserves an explicitly narrow refresh grant even when the refresh request asks for more scopes", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined, "narrow-refresh", "workspace.read git.read offline_access");
+    const initial = await exchangeToken(clientId, code!, verifier);
+    const rotated = await requestRefresh(clientId, initial.body.refresh_token, STANDARD_REVIEWER_SCOPES.join(" "));
+    expect(rotated.status).toBe(200);
+    expect(rotated.body.scope).toBe("workspace.read git.read offline_access");
+    expect(rotated.body.refresh_token).not.toBe(initial.body.refresh_token);
+    const verified = bridge.authStore.verifyAccessToken(rotated.body.access_token, `${base}/mcp`);
+    expect(verified.ok && verified.record.scopes).toEqual(["workspace.read", "git.read", "offline_access"]);
+  });
+
+  it("rejects a refresh for the wrong client or resource and after revocation", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined);
+    const initial = await exchangeToken(clientId, code!, verifier);
+    expect((await requestRefresh("foreign-client", initial.body.refresh_token)).status).toBe(400);
+    const rotated = await requestRefresh(clientId, initial.body.refresh_token);
+    expect(rotated.status).toBe(200);
+    const foreign = bridge.authStore.issueTokens({ clientId, scopes: STANDARD_REVIEWER_SCOPES, resource: "https://foreign.example.test/mcp" });
+    expect((await requestRefresh(clientId, foreign.refreshToken!)).status).toBe(400);
+    const revoked = await fetch(`${base}/oauth/revoke`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: rotated.body.refresh_token }) });
+    expect(revoked.status).toBe(200);
+    expect((await requestRefresh(clientId, rotated.body.refresh_token)).status).toBe(400);
+  });
+
+  it("rejects an expired refresh token", async () => {
+    const clientId = await registerClient();
+    const issued = bridge.authStore.issueTokens({ clientId, scopes: STANDARD_REVIEWER_SCOPES, resource: `${base}/mcp` });
+    const future = Date.now() + 31 * 24 * 60 * 60 * 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(future);
+    try {
+      expect((await requestRefresh(clientId, issued.refreshToken!)).status).toBe(400);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("persists only token hashes and keeps raw OAuth tokens out of normal logs", async () => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = pkceVerifierAndChallenge();
+    const { code } = await authorizeWithPairing(clientId, challenge, undefined);
+    const initial = await exchangeToken(clientId, code!, verifier);
+    const rotated = await requestRefresh(clientId, initial.body.refresh_token);
+    expect(rotated.status).toBe(200);
+    for (const raw of [fs.readFileSync(authStoreFile, "utf8"), fs.readFileSync(logFile, "utf8")]) {
+      for (const token of [initial.body.access_token, initial.body.refresh_token, rotated.body.access_token, rotated.body.refresh_token]) {
+        expect(raw.includes(token)).toBe(false);
+      }
+      expect(raw.includes(code!)).toBe(false);
+    }
   });
 
   it("rejects a legacy unbound refresh token and requires reauthorization", async () => {

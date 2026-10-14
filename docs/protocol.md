@@ -257,6 +257,31 @@ network, and resource retries are unchanged.
 
 ## Approved connection and current-attempt continuity
 
+Normal new reviewer authorization requests use exactly `workspace.read`,
+`workspace.search`, `git.read`, `execution.read`, and `offline_access` when
+scope is omitted or blank. The consent page shows the actual requested set.
+Explicit narrower scope requests remain narrow. `offline_access` enables
+refresh-token continuity after consent, without adding an MCP operation.
+`execution.read` permits sanitized saved output, not execution of commands.
+
+For an authorized scope change on an existing App, first observe the current
+App/workspace/repository/endpoint/account binding and effective scopes using
+the existing read-only tools. Use only that same App's supported OAuth
+reauthorization flow. Confirm the request actually contains the intended five
+scopes; a client that explicitly requests two scopes stays at two. Complete
+the provider's actual consent and required login/MFA/CAPTCHA/account steps,
+then verify permitted read/search/git/saved-output access and refresh
+continuity from that same reviewer. Keep old grant observations as history.
+Never record tokens, cookies, or real codes. If the provider cannot offer the
+same-App flow, report that capability blocker without replacing the App.
+
+Preparing this procedure or passing synthetic tests does not authorize or
+prove a live scope change, release, consumer adoption, or F02 resumption.
+Old 2.5.x pins and their evidence requirements remain governing until a
+formally published successor is explicitly adopted through its migration
+rules. Safe OAuth connectivity is separate from receipt eligibility and the
+independent reviewer's content verdict.
+
 Continue an already authorized operation when its current service, origin,
 account, exact installation/workspace/repository/endpoint binding, and read-only
 scopes still match. Reuse existing connection, session, provisioning,

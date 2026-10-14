@@ -193,6 +193,13 @@ Credentials stay in the OS app state directory, not in the project.
 - **Knowing the URL grants nothing**: the public MCP endpoint requires OAuth 2.1
   (PKCE S256, dynamic client registration, rotating refresh tokens). Without a
   token: 401. Wrong workspace: 403.
+- **Normal reviewer permissions**: an omitted or blank scope request asks for
+  `workspace.read`, `workspace.search`, `git.read`, `execution.read`, and
+  `offline_access`. The first four allow read-only review; `offline_access`
+  allows a rotating refresh token to keep that approved connection usable.
+  Actual provider consent is still required. Explicit narrower requests and
+  existing grants stay narrow; reconnecting or refreshing never upgrades them
+  implicitly. Reading saved execution output does not allow running commands.
 - **The model never sees long-lived credentials**: the only secret that ever
   touches a browser is a one-time pairing code (5-minute TTL, 5 attempts,
   rate-limited, destroyed on use).
