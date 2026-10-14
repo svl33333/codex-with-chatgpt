@@ -12,7 +12,7 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.14`
+- Custom version: `0.1.3-svl.15`
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -33,7 +33,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | ChatGPT creation surface | `src/provisioning/chatgpt-surface.ts`, `src/config/endpoint.ts`, `skill/SKILL.md` | The normal custom-MCP creation route is the plugin app shell (`/plugins` → clear inherited filter → Add → Create a custom MCP server). Settings is management/recovery only; a historical deep-link redirect is route drift and must recover semantically. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
 | CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
-| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | A pinned ref is cloned, built with the frozen lockfile, and the exact Codex-native Skill is installed only after successful verification. |
+| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | Bootstrap delegates to the updater; a separately fetched candidate is verified and built before activation. Existing managed source proves an unedited Skill; unknown or installed-only content is preserved. |
 
 These modules are adapter-level foundations. The upstream browser workflow
 still performs the user-facing connector operation; callers should use the
@@ -88,6 +88,18 @@ JSON is prohibited. Until a trusted producer is demonstrated, the auto-confirm
 path fails closed at the service's normal consent UI. This source change does
 not establish release/adoption or production automatic-consent capability.
 
+The installed `.13` Runtime and the immutable `.14` tag are distinct from this
+`.15` source candidate. F09's production assurance gap remains open until the
+formal release/adoption and actual environment checks. Candidate regression
+coverage reuses `tests/oauth.test.ts` for resource binding, unsupported scopes,
+read-only grants, refresh rotation/replay and secret-free persistence;
+`tests/consent.test.ts` for current observations, challenge mismatch, one-shot
+consumption and replay; `tests/reliability.test.ts` for exact reuse proofs and
+ambiguous delivery; and `tests/mcp-integration.test.ts`, `tests/workspace.test.ts`
+and `tests/execution-output.test.ts` for containment and filtered output.
+Synthetic success does not establish a browser observation producer or a live
+provider grant.
+
 ## Update procedure
 
 1. Inspect upstream release notes and diff the new base against the recorded
@@ -100,6 +112,28 @@ not establish release/adoption or production automatic-consent capability.
 4. Publish a new immutable tag on the custom fork.
 5. Run `scripts/update-custom-c2c.ps1 -Ref <tag>`; it builds a new version
    directory and advances the user-local manifest only after verification.
+
+`bootstrap-custom-c2c.ps1` defaults to `v0.1.3-svl.15`. The updater still reads
+`runtime.json`'s ref when `-Ref` is omitted. Both accept optional
+`-ExpectedCommit`, `-ExpectedVersion`, and `-ExpectedSkillSha256`; the latter
+retains TeamAI's UTF-8/LF-normalized Skill digest meaning. Expected identities
+are checked against the Runtime's own fetched candidate before build and again
+before activation, independently of a parent's staging inspection.
+An existing version checkout is never fetched or checked out in place.
+Only an unchanged, already active installation with the same manifest,
+launcher and managed Skill is a no-op. This path executes no existing generated
+code and makes no claim about the health or authenticity of `dist` or
+`node_modules`. A same-commit directory that is not the active installation is
+a collision. All new activations use an isolated build and the updater's own
+safe Skill installer, including when the fetched candidate has a legacy installer.
+Conflicting/dirty version directories, missing provenance, edited `SKILL.md`,
+and installed-only Skill content fail closed. Installation failure restores the
+previous raw bytes or absence of `SKILL.md`, its source metadata, the launcher,
+and `runtime.json`. Rollback only restores files written by this attempt whose
+current bytes still equal that write; conflicting edits are preserved.
+A failed restoration reports the affected file and retained
+backup directory; unused prepared versions are retained for inspection.
+Preferences, OAuth grants, old versions and unrelated user files are untouched.
 
 The TeamAI repository distributes the policy, Codex-only installer, and
 bootstrap/update wrappers as control-plane material. The executable Skill
