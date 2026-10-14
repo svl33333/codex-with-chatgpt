@@ -100,6 +100,7 @@ function invoke(fixture: InstallationFixture, options: {
   expectedSkillSha256?: string;
   lock?: string;
   buildAction?: string;
+  parentScript?: string;
 } = {}) {
   const args = ["-Repository", fixture.repository, "-InstallRoot", fixture.installRoot];
   if (options.ref !== null) args.push("-Ref", options.ref ?? "candidate");
@@ -108,7 +109,7 @@ function invoke(fixture: InstallationFixture, options: {
     if (value !== undefined) args.push(`-${parameter}`, value);
   }
   const script = path.join(fixture.driverDirectory, options.bootstrap ? "bootstrap-custom-c2c.ps1" : "update-custom-c2c.ps1");
-  const command = `$ErrorActionPreference='Stop'; ${options.lock ? `$held=[IO.File]::Open(${quote(options.lock)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); try {` : ""} & ${quote(script)} ${args.map((argument, index) => index % 2 === 0 ? argument : quote(argument)).join(" ")} ${options.lock ? "} finally { $held.Dispose() }" : ""}`;
+  const command = options.parentScript ?? `$ErrorActionPreference='Stop'; ${options.lock ? `$held=[IO.File]::Open(${quote(options.lock)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); try {` : ""} & ${quote(script)} ${args.map((argument, index) => index % 2 === 0 ? argument : quote(argument)).join(" ")} ${options.lock ? "} finally { $held.Dispose() }" : ""}`;
   const execution = spawnSync(shell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
     cwd: fixture.root,
     encoding: "utf8",
@@ -146,8 +147,38 @@ function installPrevious(fixture: InstallationFixture): void {
   expect(command.status, command.stderr).toBe(0);
 }
 
+function failAfterActivation(fixture: InstallationFixture): void {
+  const driver = path.join(fixture.driverDirectory, "update-custom-c2c.ps1");
+  write(driver, fs.readFileSync(driver, "utf8").replace(/^(\s*\$writtenFiles \+= Write-ActivationFile \$previousFiles\[0\].*)$/m, "$1\n    throw 'synthetic post-activation failure'"));
+}
+
+function failAfterFirstSkillWrite(fixture: InstallationFixture): void {
+  const installer = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+  write(installer, fs.readFileSync(installer, "utf8").replace("$writtenFiles += Write-SkillFile $previousFiles[1]", "throw 'synthetic post-Skill failure'\n  $writtenFiles += Write-SkillFile $previousFiles[1]"));
+}
+
+function injectBeforeCheckedDeletion(fixture: InstallationFixture, owner: "updater" | "installer", target: string, actor: string): void {
+  const driver = path.join(fixture.driverDirectory, owner === "updater" ? "update-custom-c2c.ps1" : "install-codex-c2c-skill.ps1");
+  const deletion = "[C2CFileRollback]::DeleteOwnedFile($Written.Path, $Written.OwnedFile, $Written.Written)";
+  const injection = `if ($Written.Path -eq ${quote(target)}) { & ${quote(process.execPath)} ${quote(actor)}; if ($LASTEXITCODE -ne 0) { throw 'synthetic actor failed' } }; ${deletion}`;
+  const source = fs.readFileSync(driver, "utf8");
+  expect(source).toContain(deletion);
+  write(driver, source.replace(deletion, injection));
+}
+
+function createMutationActor(fixture: InstallationFixture, target: string, mode: "edit" | "replace"): string {
+  const actor = path.join(fixture.root, "mutation.cjs");
+  const proof = path.join(fixture.root, "mutation-proof.json");
+  write(actor, `const fs=require('node:fs');const target=${JSON.stringify(target)};const before=fs.readFileSync(target);${mode === "edit" ? "fs.writeFileSync(target,'concurrent new bytes');" : "fs.writeFileSync(target+'.replacement',before);fs.renameSync(target,target+'.prior-owned');fs.renameSync(target+'.replacement',target);"}fs.writeFileSync(${JSON.stringify(proof)},JSON.stringify({mode:${JSON.stringify(mode)},before:before.toString('base64'),after:fs.readFileSync(target).toString('base64')}));`);
+  return actor;
+}
+
 afterEach(() => {
-  for (const root of fixtureRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of fixtureRoots.splice(0)) {
+    const resolved = path.resolve(root);
+    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith("c2c installation-")) throw new Error("Unexpected fixture cleanup target");
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
 });
 
 describe.runIf(process.platform === "win32")("isolated Runtime installation", () => {
@@ -323,7 +354,7 @@ describe.runIf(process.platform === "win32")("isolated Runtime installation", ()
     const command = invoke(fixture);
     expect(command.status).not.toBe(0);
     expect(command.stderr).toContain("restoration failed");
-    expect(command.stderr).toContain("original bytes retained");
+    expect(command.stderr).toContain("rollback snapshots retained");
     expect(fs.readFileSync(activePaths(fixture)[2], "utf8")).toBe("concurrent postwrite edit");
     expect(snapshot(fixture).filter((_entry, index) => index !== 2)).toEqual(before.filter((_entry, index) => index !== 2));
     const backups = fs.readdirSync(fixture.installRoot).filter(name => name.startsWith(".rollback-") && !previousBackups.has(name));
@@ -401,5 +432,212 @@ describe.runIf(process.platform === "win32")("isolated Runtime installation", ()
     expect(command.status).not.toBe(0);
     expect(snapshot(fixture)).toEqual(before);
     expect(fs.existsSync(activePaths(fixture)[1])).toBe(true);
+  });
+
+  it.each([0, 1, 2, 3])("preserves a new edit after the updater rollback check of originally absent target %i", index => {
+    const fixture = createFixture();
+    failAfterActivation(fixture);
+    const target = activePaths(fixture)[index];
+    injectBeforeCheckedDeletion(fixture, "updater", target, createMutationActor(fixture, target, "edit"));
+    const command = invoke(fixture);
+    expect(command.status).not.toBe(0);
+    expect(fs.readFileSync(target, "utf8")).toBe("concurrent new bytes");
+    expect(command.stderr).toContain("partial rollback");
+    expect(command.stderr).toContain("residual");
+    expect(command.stderr).toContain("rollback snapshots retained");
+    expect(JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8")).mode).toBe("edit");
+    for (const [otherIndex, otherPath] of activePaths(fixture).entries()) if (otherIndex < 4 && otherIndex !== index) expect(fs.existsSync(otherPath)).toBe(false);
+  });
+
+  it.each([0, 1, 2, 3])("preserves a same-byte replacement after the updater rollback check of originally absent target %i", index => {
+    const fixture = createFixture();
+    failAfterActivation(fixture);
+    const target = activePaths(fixture)[index];
+    injectBeforeCheckedDeletion(fixture, "updater", target, createMutationActor(fixture, target, "replace"));
+    const command = invoke(fixture);
+    expect(fs.existsSync(path.join(fixture.root, "mutation-proof.json")), command.stderr).toBe(true);
+    const proof = JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8"));
+    expect(command.status).not.toBe(0);
+    expect(proof.before).toBe(proof.after);
+    expect(fs.readFileSync(target).toString("base64")).toBe(proof.before);
+    expect(command.stderr).toContain("identity changed");
+    expect(command.stderr).toContain("partial rollback");
+  });
+
+  it.each(["edit", "replace"] as const)("preserves a successful %s after the standalone installer rollback check", mode => {
+    const fixture = createFixture();
+    failAfterFirstSkillWrite(fixture);
+    const target = activePaths(fixture)[2];
+    injectBeforeCheckedDeletion(fixture, "installer", target, createMutationActor(fixture, target, mode));
+    const command = invoke(fixture);
+    expect(fs.existsSync(path.join(fixture.root, "mutation-proof.json")), command.stderr).toBe(true);
+    const proof = JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8"));
+    expect(command.status).not.toBe(0);
+    expect(fs.readFileSync(target).toString("base64")).toBe(proof.after);
+    expect(command.stderr).toContain("partial rollback");
+    if (mode === "replace") expect(command.stderr).toContain("identity changed");
+    else expect(fs.readFileSync(target, "utf8")).toBe("concurrent new bytes");
+  });
+
+  it("blocks another process's edit and replacement while the checked deletion handle remains open", () => {
+    const fixture = createFixture();
+    failAfterActivation(fixture);
+    const target = activePaths(fixture)[2];
+    const actor = path.join(fixture.root, "exclusive-actor.cjs");
+    const proofPath = path.join(fixture.root, "exclusive-proof.json");
+    const replacement = target + ".replacement";
+    write(actor, `const fs=require('node:fs');const proof={writeDenied:false,replaceDenied:false};fs.writeFileSync(${JSON.stringify(replacement)},'user replacement bytes');try{fs.writeFileSync(${JSON.stringify(target)},'user edit bytes')}catch{proof.writeDenied=true}try{fs.renameSync(${JSON.stringify(target)},${JSON.stringify(target + ".prior-owned")});fs.renameSync(${JSON.stringify(replacement)},${JSON.stringify(target)})}catch{proof.replaceDenied=true}fs.writeFileSync(${JSON.stringify(proofPath)},JSON.stringify(proof));`);
+    const installer = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    const hook = `if (path == ${JSON.stringify(target)}) { using (var actor = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(${JSON.stringify(process.execPath)}, ${JSON.stringify(`"${actor}"`)}) { UseShellExecute = false, CreateNoWindow = true })) { if (!actor.WaitForExit(5000) || actor.ExitCode != 0) throw new IOException("Synthetic actor did not finish"); } }\n        if (!SetFileInformationByHandle`;
+    write(installer, fs.readFileSync(installer, "utf8").replace("if (!SetFileInformationByHandle", hook));
+    const before = snapshot(fixture);
+    const command = invoke(fixture);
+    expect(command.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+    expect(JSON.parse(fs.readFileSync(proofPath, "utf8"))).toEqual({ writeDenied: true, replaceDenied: true });
+    expect(fs.readFileSync(replacement, "utf8")).toBe("user replacement bytes");
+    expect(command.stderr).toContain("completed writes restored");
+  });
+
+  it.each(["updater", "installer"] as const)("reports an undeletable original-absence target during %s rollback", owner => {
+    const fixture = createFixture();
+    if (owner === "updater") failAfterActivation(fixture); else failAfterFirstSkillWrite(fixture);
+    const target = activePaths(fixture)[2];
+    const driver = path.join(fixture.driverDirectory, owner === "updater" ? "update-custom-c2c.ps1" : "install-codex-c2c-skill.ps1");
+    const deletion = "[C2CFileRollback]::DeleteOwnedFile($Written.Path, $Written.OwnedFile, $Written.Written)";
+    const locked = `if ($Written.Path -eq ${quote(target)}) { $otherReader = [IO.File]::Open($Written.Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read); try { ${deletion} } finally { $otherReader.Dispose() } } else { ${deletion} }`;
+    write(driver, fs.readFileSync(driver, "utf8").replace(deletion, locked));
+    const command = invoke(fixture);
+    expect(command.status).not.toBe(0);
+    expect(fs.existsSync(target)).toBe(true);
+    expect(command.stderr).toContain("partial rollback");
+    expect(command.stderr).toContain("residual");
+  });
+
+  it.each(["updater", "installer"] as const)("reports a read-only original-absence target during %s rollback", owner => {
+    const fixture = createFixture();
+    if (owner === "updater") failAfterActivation(fixture); else failAfterFirstSkillWrite(fixture);
+    const target = activePaths(fixture)[2];
+    const driver = path.join(fixture.driverDirectory, owner === "updater" ? "update-custom-c2c.ps1" : "install-codex-c2c-skill.ps1");
+    const deletion = "[C2CFileRollback]::DeleteOwnedFile($Written.Path, $Written.OwnedFile, $Written.Written)";
+    write(driver, fs.readFileSync(driver, "utf8").replace(deletion, `if ($Written.Path -eq ${quote(target)}) { [IO.File]::SetAttributes($Written.Path, [IO.FileAttributes]::ReadOnly) }; ${deletion}`));
+    const command = invoke(fixture);
+    expect(command.status).not.toBe(0);
+    expect(fs.existsSync(target)).toBe(true);
+    expect(command.stderr).toContain("partial rollback");
+    expect(command.stderr).toContain("residual");
+    fs.chmodSync(target, 0o666);
+  });
+
+  it("reports unsupported conditional deletion without falling back to path deletion", () => {
+    const fixture = createFixture();
+    failAfterActivation(fixture);
+    const installer = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    write(installer, fs.readFileSync(installer, "utf8").replace("if (!SetFileInformationByHandle", "if (path.Length > 0) throw new NotSupportedException(\"Synthetic unsupported deletion\");\n        if (!SetFileInformationByHandle"));
+    const command = invoke(fixture);
+    expect(command.status).not.toBe(0);
+    for (const target of activePaths(fixture).slice(0, 4)) expect(fs.existsSync(target)).toBe(true);
+    expect(command.stderr).toContain("partial rollback");
+    expect(command.stderr).toContain("rollback snapshots retained");
+  });
+
+  it("passes only successful in-memory write records through bootstrap and keeps parent scope and environment intact", () => {
+    const fixture = createFixture();
+    const progressFile = path.join(fixture.root, "build.cjs");
+    fs.appendFileSync(progressFile, "\nconsole.log('synthetic native build progress');\n");
+    const entry = path.join(fixture.driverDirectory, "bootstrap-custom-c2c.ps1");
+    const report = path.join(fixture.root, "handoff.json");
+    const call = `& ${quote(entry)} -Repository ${quote(fixture.repository)} -Ref candidate -InstallRoot ${quote(fixture.installRoot)} -ExpectedCommit ${quote(fixture.candidateCommit)} -ExpectedVersion ${quote(candidateVersion)} -ExpectedSkillSha256 ${quote(fixture.skillSha256)} -PassThru`;
+    const parentScript = `$ErrorActionPreference='Stop'; $writtenFiles='parent scope'; $handoffFiles='parent handoff'; $beforeHome=$env:CODEX_HOME; $returned=@(${call}); $handles=@($returned|ForEach-Object{$_.OwnedFile.SafeFileHandle}); try { $proof=[ordered]@{count=$returned.Count;typed=@($returned|Where-Object{($_.Written -is [byte[]]) -and ($null -eq $_.Before) -and ($_.OwnedFile -is [IO.FileStream])}).Count;scopeIntact=($writtenFiles -eq 'parent scope' -and $handoffFiles -eq 'parent handoff');environmentIntact=($beforeHome -eq $env:CODEX_HOME);paths=@($returned|ForEach-Object{$_.Path});liveHandles=@($handles|Where-Object{-not $_.IsClosed}).Count} } finally { foreach($written in $returned){if($written.OwnedFile){$written.OwnedFile.Dispose()}} }; $proof.closedHandles=@($handles|Where-Object{$_.IsClosed}).Count; $proof.noOpCount=@(${call}).Count; [IO.File]::WriteAllText(${quote(report)},($proof|ConvertTo-Json -Depth 5));`;
+    const command = invoke(fixture, { parentScript });
+    expect(command.status, command.stderr).toBe(0);
+    const proof = JSON.parse(fs.readFileSync(report, "utf8"));
+    expect(proof.count).toBe(4);
+    expect(proof.typed).toBe(4);
+    expect(proof.liveHandles).toBe(4);
+    expect(proof.closedHandles).toBe(4);
+    expect(proof.scopeIntact).toBe(true);
+    expect(proof.environmentIntact).toBe(true);
+    expect(proof.noOpCount).toBe(0);
+    expect(new Set(proof.paths)).toEqual(new Set(activePaths(fixture).slice(0, 4)));
+    expect(command.stdout).toContain("synthetic native build progress");
+  });
+
+  it("keeps a foreign change made after child success when the parent rolls back returned write records", () => {
+    const fixture = createFixture();
+    const entry = path.join(fixture.driverDirectory, "update-custom-c2c.ps1");
+    const target = activePaths(fixture)[2];
+    const report = path.join(fixture.root, "parent-rollback.json");
+    const parentScript = `$ErrorActionPreference='Stop'; $returned=@(& ${quote(entry)} -Repository ${quote(fixture.repository)} -Ref candidate -InstallRoot ${quote(fixture.installRoot)} -PassThru); $restoreFailures=@(); try { [IO.File]::WriteAllText(${quote(target)},'foreign change after child'); try { throw 'synthetic parent post-install failure' } catch { foreach($written in $returned){try{[C2CFileRollback]::DeleteOwnedFile($written.Path,$written.OwnedFile,$written.Written)}catch{$restoreFailures+=$written.Path}} } } finally {foreach($written in $returned){if($written.OwnedFile){$written.OwnedFile.Dispose()}}}; [IO.File]::WriteAllText(${quote(report)},([ordered]@{failures=$restoreFailures;returnedCount=$returned.Count}|ConvertTo-Json -Depth 4));`;
+    const command = invoke(fixture, { parentScript });
+    expect(command.status, command.stderr).toBe(0);
+    const proof = JSON.parse(fs.readFileSync(report, "utf8"));
+    expect(proof.returnedCount).toBe(4);
+    expect(proof.failures).toEqual([target]);
+    expect(fs.readFileSync(target, "utf8")).toBe("foreign change after child");
+    for (const [index, file] of activePaths(fixture).entries()) if (index < 4 && index !== 2) expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it.each([0, 1, 2, 3])("preserves a same-byte replacement of existing updater target %i during rollback", index => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    failAfterActivation(fixture);
+    const target = activePaths(fixture)[index];
+    const actor = createMutationActor(fixture, target, "replace");
+    const driver = path.join(fixture.driverDirectory, "update-custom-c2c.ps1");
+    const restore = "[void](Write-ActivationFile ([pscustomobject]@{ Path = $Written.Path; Bytes = $Written.Written }) $Written.Before $Written.OwnedFile)";
+    const source = fs.readFileSync(driver, "utf8");
+    expect(source).toContain(restore);
+    write(driver, source.replace(restore, `if ($Written.Path -eq ${quote(target)}) { & ${quote(process.execPath)} ${quote(actor)}; if ($LASTEXITCODE -ne 0) { throw 'synthetic actor failed' } }; ${restore}`));
+    const command = invoke(fixture);
+    expect(fs.existsSync(path.join(fixture.root, "mutation-proof.json")), command.stderr).toBe(true);
+    const proof = JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8"));
+    expect(command.status).not.toBe(0);
+    expect(fs.readFileSync(target).toString("base64")).toBe(proof.after);
+    expect(proof.before).toBe(proof.after);
+    expect(command.stderr).toContain("identity changed");
+    expect(command.stderr).toContain("partial rollback");
+    expect(snapshot(fixture).filter((_entry, other) => other !== index)).toEqual(before.filter((_entry, other) => other !== index));
+  });
+
+  it("preserves a same-byte replacement of an existing installer target during rollback", () => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    failAfterFirstSkillWrite(fixture);
+    const target = activePaths(fixture)[2];
+    const actor = createMutationActor(fixture, target, "replace");
+    const driver = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    const restore = "[void](Write-SkillFile ([pscustomobject]@{ Path = $Written.Path; Bytes = $Written.Written }) $Written.Before $Written.OwnedFile)";
+    const source = fs.readFileSync(driver, "utf8");
+    expect(source).toContain(restore);
+    write(driver, source.replace(restore, `& ${quote(process.execPath)} ${quote(actor)}; if ($LASTEXITCODE -ne 0) { throw 'synthetic actor failed' }; ${restore}`));
+    const command = invoke(fixture);
+    expect(fs.existsSync(path.join(fixture.root, "mutation-proof.json")), command.stderr).toBe(true);
+    const proof = JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8"));
+    expect(command.status).not.toBe(0);
+    expect(fs.readFileSync(target).toString("base64")).toBe(proof.after);
+    expect(command.stderr).toContain("identity changed");
+    expect(snapshot(fixture).filter((_entry, index) => index !== 2)).toEqual(before.filter((_entry, index) => index !== 2));
+  });
+
+  it("passes live ownership for existing writes and rejects a same-byte replacement after child success", () => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    const target = activePaths(fixture)[2];
+    const actor = createMutationActor(fixture, target, "replace");
+    const entry = path.join(fixture.driverDirectory, "update-custom-c2c.ps1");
+    const report = path.join(fixture.root, "existing-parent-rollback.json");
+    const parentScript = `$ErrorActionPreference='Stop'; $returned=@(& ${quote(entry)} -Repository ${quote(fixture.repository)} -Ref candidate -InstallRoot ${quote(fixture.installRoot)} -PassThru); $failures=@(); $liveCount=@($returned|Where-Object{($_.OwnedFile -is [IO.FileStream]) -and -not $_.OwnedFile.SafeFileHandle.IsClosed}).Count; try { & ${quote(process.execPath)} ${quote(actor)}; if($LASTEXITCODE -ne 0){throw 'synthetic actor failed'}; foreach($written in $returned){try{$stream=[IO.File]::Open($written.Path,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read);try{[C2CFileRollback]::AssertSameFile($stream.SafeFileHandle,$written.OwnedFile);$current=New-Object byte[] $stream.Length;[void]$stream.Read($current,0,$current.Length);if([Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($written.Written)){throw 'foreign bytes'};$stream.Position=0;$stream.SetLength(0);$stream.Write($written.Before,0,$written.Before.Length);$stream.Flush()}finally{$stream.Dispose()}}catch{$failures+=$written.Path}} } finally {foreach($written in $returned){if($written.OwnedFile){$written.OwnedFile.Dispose()}}};[IO.File]::WriteAllText(${quote(report)},([ordered]@{failures=$failures;liveCount=$liveCount}|ConvertTo-Json -Depth 4));`;
+    const command = invoke(fixture, { parentScript });
+    expect(command.status, command.stderr).toBe(0);
+    const proof = JSON.parse(fs.readFileSync(report, "utf8"));
+    const mutation = JSON.parse(fs.readFileSync(path.join(fixture.root, "mutation-proof.json"), "utf8"));
+    expect(proof.liveCount).toBe(4);
+    expect(proof.failures).toEqual([target]);
+    expect(fs.readFileSync(target).toString("base64")).toBe(mutation.after);
+    expect(snapshot(fixture).filter((_entry, index) => index !== 2)).toEqual(before.filter((_entry, index) => index !== 2));
   });
 });

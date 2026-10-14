@@ -131,6 +131,26 @@ and installed-only Skill content fail closed. Installation failure restores the
 previous raw bytes or absence of `SKILL.md`, its source metadata, the launcher,
 and `runtime.json`. Rollback only restores files written by this attempt whose
 current bytes still equal that write; conflicting edits are preserved.
+Every successful write retains a read handle to the actual written file in
+the existing in-memory write record until the attempt ends. Existing-file
+restoration compares both live file identities and the known write bytes
+under its write lock. For originally absent files, rollback compares
+the two open handles' Windows volume/file identities and the written bytes
+under a DELETE handle that denies writes, deletes and replacements. It releases
+the retained reader, marks the checked handle for deletion, closes it, and
+confirms absence. It never follows the check with a separate path-based deletion.
+Unsupported APIs, conflicting handles, replacement, or unconfirmed absence
+fail closed and report partial rollback with residual paths and retained
+snapshots. This uses the existing limited rollback rather than a persistent
+receipt or transaction journal.
+Same-process PowerShell callers may request `-PassThru` on bootstrap/update to
+receive the successful attempt's existing in-memory write records, including
+live ownership readers. A no-op returns no records; console build output is
+separate. The caller must dispose those readers in `finally`, and must use the
+returned known write bytes rather than infer ownership from a fresh snapshot.
+Originally absent files can be reverted with `C2CFileRollback`'s checked
+deletion; byte restoration still requires the existing locked comparison.
+Without `-PassThru`, the Runtime releases all readers itself.
 A failed restoration reports the affected file and retained
 backup directory; unused prepared versions are retained for inspection.
 Preferences, OAuth grants, old versions and unrelated user files are untouched.

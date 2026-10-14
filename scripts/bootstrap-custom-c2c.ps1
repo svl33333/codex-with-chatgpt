@@ -5,7 +5,8 @@ param(
   [string]$InstallRoot = "$(Join-Path $env:LOCALAPPDATA 'codex-with-chatgpt-runtime')",
   [string]$ExpectedCommit,
   [string]$ExpectedVersion,
-  [string]$ExpectedSkillSha256
+  [string]$ExpectedSkillSha256,
+  [switch]$PassThru
 )
 
 $ErrorActionPreference = "Stop"

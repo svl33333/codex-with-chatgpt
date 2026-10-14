@@ -5,7 +5,8 @@ param(
   [string]$InstallRoot = "$(Join-Path $env:LOCALAPPDATA 'codex-with-chatgpt-runtime')",
   [string]$ExpectedCommit,
   [string]$ExpectedVersion,
-  [string]$ExpectedSkillSha256
+  [string]$ExpectedSkillSha256,
+  [switch]$PassThru
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,11 +49,12 @@ function Test-UnchangedFile($Previous) {
   return $null -ne $current.Bytes -and [Convert]::ToBase64String($Previous.Bytes) -eq [Convert]::ToBase64String($current.Bytes)
 }
 
-function Write-ActivationFile($Previous, [byte[]]$Bytes) {
+function Write-ActivationFile($Previous, [byte[]]$Bytes, [IO.FileStream]$OwnedFile) {
   Assert-OrdinaryPath $Previous.Path
   $isNewFile = $null -eq $Previous.Bytes
   $writePath = if ($isNewFile) { $Previous.Path + '.pending-' + [guid]::NewGuid().ToString('N') } else { $Previous.Path }
   $mode = if ($isNewFile) { [IO.FileMode]::CreateNew } else { [IO.FileMode]::Open }
+  $ownershipReader = $OwnedFile
   $stream = [IO.File]::Open($writePath, $mode, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
   try {
     $current = New-Object byte[] $stream.Length
@@ -62,15 +64,23 @@ function Write-ActivationFile($Previous, [byte[]]$Bytes) {
       if ($count -eq 0) { throw "Cannot read the complete activation target: $writePath" }
       $offset += $count
     }
+    if ($OwnedFile) { [C2CFileRollback]::AssertSameFile($stream.SafeFileHandle, $OwnedFile) }
     if (-not $isNewFile -and [Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($Previous.Bytes)) { throw "Activation target changed before write; preserving it: $($Previous.Path)" }
     try {
       $stream.Position = 0
       $stream.SetLength(0)
       $stream.Write($Bytes, 0, $Bytes.Length)
       $stream.Flush()
+      if (-not $ownershipReader) {
+        $ownershipReader = [IO.File]::Open($writePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        [void][C2CFileRollback]::CaptureIdentity($ownershipReader.SafeFileHandle)
+      }
     } catch {
       $failure = $_
-      if ($isNewFile) { throw "New activation file was not installed: $failure; incomplete staged bytes retained at $writePath" }
+      if ($ownershipReader -and -not $OwnedFile) { $ownershipReader.Dispose(); $ownershipReader = $null }
+      if ($isNewFile) {
+        throw "New activation file was not installed: $failure; incomplete staged bytes retained at $writePath"
+      }
       try {
         $stream.Position = 0
         $stream.SetLength(0)
@@ -85,8 +95,11 @@ function Write-ActivationFile($Previous, [byte[]]$Bytes) {
       throw "Activation write failed; original bytes restored through the locked file: $failure"
     }
   } finally { $stream.Dispose() }
-  if ($isNewFile) { [IO.File]::Move($writePath, $Previous.Path) }
-  return [pscustomobject]@{ Path = $Previous.Path; Before = $Previous.Bytes; Written = $Bytes }
+  if ($isNewFile) {
+    try { [IO.File]::Move($writePath, $Previous.Path) }
+    catch { $ownershipReader.Dispose(); throw }
+  }
+  return [pscustomobject]@{ Path = $Previous.Path; Before = $Previous.Bytes; Written = $Bytes; OwnedFile = $ownershipReader }
 }
 
 function Restore-ActivationFile($Written) {
@@ -94,8 +107,8 @@ function Restore-ActivationFile($Written) {
   if ($null -eq $current.Bytes -or [Convert]::ToBase64String($current.Bytes) -ne [Convert]::ToBase64String($Written.Written)) {
     throw "Activation target changed after write; preserving it: $($Written.Path)"
   }
-  if ($null -eq $Written.Before) { Remove-Item -LiteralPath $Written.Path }
-  else { [void](Write-ActivationFile ([pscustomobject]@{ Path = $Written.Path; Bytes = $Written.Written }) $Written.Before) }
+  if ($null -eq $Written.Before) { [C2CFileRollback]::DeleteOwnedFile($Written.Path, $Written.OwnedFile, $Written.Written) }
+  else { [void](Write-ActivationFile ([pscustomobject]@{ Path = $Written.Path; Bytes = $Written.Written }) $Written.Before $Written.OwnedFile) }
 }
 
 function Assert-CandidateIdentity([string]$Directory) {
@@ -164,11 +177,16 @@ try {
     }
     foreach ($previous in $previousFiles) { if (-not (Test-UnchangedFile $previous)) { throw "Activation target changed during preparation: $($previous.Path)" } }
     & (Join-Path $PSScriptRoot 'install-codex-c2c-skill.ps1') -SourceSkill (Join-Path $versionDirectory 'skill\SKILL.md') -Destination $skillDestination -Repository $Repository -Ref $Ref -Commit $identity.Commit -PassThru | Out-Null
-    Write-Output "Already installed; active files unchanged. Existing generated code was not executed or verified. Fetched candidate retained at: $candidateDirectory"
+    if (-not $PassThru) { Write-Output "Already installed; active files unchanged. Existing generated code was not executed or verified. Fetched candidate retained at: $candidateDirectory" }
     return
   }
-  Invoke-Checked corepack @('pnpm', 'install', '--frozen-lockfile') $candidateDirectory
-  Invoke-Checked corepack @('pnpm', 'build') $candidateDirectory
+  if ($PassThru) {
+    Invoke-Checked corepack @('pnpm', 'install', '--frozen-lockfile') $candidateDirectory | Out-Host
+    Invoke-Checked corepack @('pnpm', 'build') $candidateDirectory | Out-Host
+  } else {
+    Invoke-Checked corepack @('pnpm', 'install', '--frozen-lockfile') $candidateDirectory
+    Invoke-Checked corepack @('pnpm', 'build') $candidateDirectory
+  }
   $builtIdentity = Assert-CandidateIdentity $candidateDirectory
   if ($builtIdentity.Commit -ne $identity.Commit -or $builtIdentity.SkillSha256 -ne $identity.SkillSha256 -or $builtIdentity.Version -ne $identity.Version) { throw 'Runtime candidate changed during build.' }
   $versionOutput = (Invoke-Checked node @('bin/c2c.js', '--version') $candidateDirectory | Out-String).Trim()
@@ -189,6 +207,7 @@ try {
     if ($null -ne $previousFiles[$index].Bytes) { [IO.File]::WriteAllBytes((Join-Path $rollbackDirectory "$index.bin"), $previousFiles[$index].Bytes) }
   }
   $writtenFiles = @()
+  $handoffFiles = $false
   try {
     # Older candidate installers overwrite edits; use this updater's reviewed installer for every ref.
     $skillScript = Join-Path $PSScriptRoot 'install-codex-c2c-skill.ps1'
@@ -197,6 +216,7 @@ try {
     $writtenFiles += Write-ActivationFile $previousFiles[1] $launcherBytes
     $newManifest = [ordered]@{ schemaVersion = 1; repository = $Repository; ref = $Ref; commit = $identity.Commit; checkout = $versionDirectory; launcher = $launcherPath; updatedAt = (Get-Date).ToUniversalTime().ToString('o') }
     $writtenFiles += Write-ActivationFile $previousFiles[0] ([Text.Encoding]::UTF8.GetBytes(($newManifest | ConvertTo-Json)))
+    $handoffFiles = [bool]$PassThru
   } catch {
     $failure = $_
     $restoreFailures = @()
@@ -205,10 +225,15 @@ try {
         Restore-ActivationFile $written
       } catch { $restoreFailures += "$($written.Path): $($_.Exception.Message)" }
     }
-    if ($restoreFailures) { throw "Activation failed: $failure; restoration failed: $($restoreFailures -join '; '); original bytes retained at $rollbackDirectory" }
+    if ($restoreFailures) { throw "Activation failed: $failure; partial rollback, restoration failed; residual paths: $($restoreFailures -join '; '); rollback snapshots retained at $rollbackDirectory" }
     throw "Activation failed; this updater's completed writes restored: $failure; backup retained at $rollbackDirectory"
+  } finally {
+    if (-not $handoffFiles) {
+      foreach ($written in $writtenFiles) { if ($written.OwnedFile) { $written.OwnedFile.Dispose() } }
+    }
   }
-  Write-Output ("Updated custom C2C {0} ({1}) at {2}`nLauncher: {3}`nManifest: {4}" -f $Ref, $identity.Commit, $versionDirectory, $launcherPath, $manifestPath)
+  if ($PassThru) { $writtenFiles }
+  else { Write-Output ("Updated custom C2C {0} ({1}) at {2}`nLauncher: {3}`nManifest: {4}" -f $Ref, $identity.Commit, $versionDirectory, $launcherPath, $manifestPath) }
 } catch {
   throw "$_`nPrepared candidate retained at: $candidateDirectory"
 }
