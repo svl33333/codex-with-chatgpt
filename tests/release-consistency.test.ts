@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
-const candidateVersion = "0.1.3-svl.14";
-const candidateRef = "v0.1.3-svl.14";
+const candidateVersion = "0.1.3-svl.15";
+const candidateRef = "v0.1.3-svl.15";
 
 function read(relative: string): string {
   return fs.readFileSync(path.join(root, relative), "utf8");
@@ -37,5 +37,15 @@ describe("custom runtime release consistency", () => {
     expect(updater).toContain("if (-not $Ref)");
     expect(updater).toContain("$manifest.ref");
     expect(updater).not.toMatch(/\[string\]\$Ref\s*=\s*"v0\.1\.3-svl\./);
+  });
+
+  it("keeps bootstrap as the updater entry point with optional expected identities", () => {
+    const bootstrap = read("scripts/bootstrap-custom-c2c.ps1");
+    expect(bootstrap).toContain("update-custom-c2c.ps1");
+    expect(bootstrap).not.toContain("git clone");
+    for (const parameter of ["ExpectedCommit", "ExpectedVersion", "ExpectedSkillSha256"]) {
+      expect(bootstrap).toContain(`[string]$${parameter}`);
+      expect(read("scripts/update-custom-c2c.ps1")).toContain(`[string]$${parameter}`);
+    }
   });
 });
