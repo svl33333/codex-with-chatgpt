@@ -282,6 +282,38 @@ review are distinct facts. Follow the resolved `codex-c2c-v2` workflow and its
 recorded pin for formal evidence, verdicts, remediation, and Human Gates; do
 not add Runtime checks as new mandatory receipt fields or treat READY as PASS.
 
+## Reviewer authorization scopes
+
+For a normal new reviewer, an omitted or blank OAuth scope request uses exactly
+`workspace.read`, `workspace.search`, `git.read`, `execution.read`, and
+`offline_access`. The first four scopes permit read-only review;
+`offline_access` permits refresh-token continuity after actual provider consent.
+It adds no MCP read/write/execute/admin operation. `execution.read` means
+reading allowed sanitized saved output, never running a command.
+
+Preserve explicit narrower requests and existing grants. Reuse, store reload,
+and refresh do not upgrade a two-scope App. A two-scope grant without
+`offline_access` has no refresh token. A narrow grant explicitly including
+`offline_access` refreshes only that original set. Do not alter credentials or
+silently retry with broader scopes.
+
+When a scope change is separately authorized, verify the existing App,
+workspace, repository, fixed endpoint, account, and effective scope set. Use
+only the same App's supported OAuth reauthorization, inspect the actual
+requested scopes, and preserve real provider consent, login, MFA, CAPTCHA,
+and account selection. A client still requesting two scopes stays narrow.
+After consent, confirm the same reviewer's permitted read/search/git/saved
+output and refresh continuity; retain the old observations as history without
+tokens, cookies, or real codes. If the same-App flow is unavailable, report
+that capability blocker without creating a replacement App.
+
+The existing automatic-warning policy still expects the exact five scopes;
+an explicit narrow profile uses the normal provider consent path and remains
+human-required under that automatic-warning policy. Keep unproven UI
+correlation fail closed. Synthetic tests do not prove a live grant, consent,
+release, adoption, or F02 readiness. Preserve the recorded canonical pin and
+its evidence contract until a formally published migration is adopted.
+
 ## Daily update check
 
 At the START of every workflow below (before anything else), run these two

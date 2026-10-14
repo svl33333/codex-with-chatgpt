@@ -88,6 +88,15 @@ function runCliAsync(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: 
 }
 
 describe("runtime-owned connector consent policy", () => {
+  it("expects exactly the five standard scopes while keeping narrow profiles human-required", () => {
+    const standardScopes = ["workspace.read", "workspace.search", "git.read", "execution.read", "offline_access"];
+    const observed = { ...connectorConsentBinding(binding), accountFingerprint: binding.accountFingerprint };
+    expect(determineConnectorConsentAction(context({ observed: { ...observed, scopes: standardScopes } })).action).toBe("AUTO_CONFIRM");
+    for (const scopes of [["workspace.read", "git.read"], ["workspace.read", "git.read", "offline_access"]]) {
+      expect(determineConnectorConsentAction(context({ observed: { ...observed, scopes } })).action).toBe("HUMAN_REQUIRED");
+    }
+  });
+
   it("automatically confirms only the exact current read-only C2C warning", () => {
     expect(determineConnectorConsentAction(context())).toEqual({
       action: "AUTO_CONFIRM",
