@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
-const candidateVersion = "0.1.3-svl.15";
-const candidateRef = "v0.1.3-svl.15";
+const candidateVersion = "0.1.3-svl.16";
+const candidateRef = "v0.1.3-svl.16";
 
 function read(relative: string): string {
   return fs.readFileSync(path.join(root, relative), "utf8");

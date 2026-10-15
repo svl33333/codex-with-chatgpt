@@ -131,6 +131,48 @@ function Assert-CandidateIdentity([string]$Directory) {
   return [pscustomobject]@{ Commit = $commit; Version = [string]$package.version; SkillSha256 = $skillSha256 }
 }
 
+function Assert-DependencyLinks([string]$Directory) {
+  $inspection = @'
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.join(process.argv[1], 'node_modules');
+let relative = 'node_modules';
+let links = 0;
+const started = Date.now();
+try {
+  const rootStat = fs.lstatSync(root);
+  if (rootStat.isSymbolicLink()) {
+    fs.realpathSync(root);
+    throw Object.assign(new Error(), { code: 'LINKED_ROOT' });
+  }
+  if (!rootStat.isDirectory()) throw Object.assign(new Error(), { code: 'NOT_DIRECTORY' });
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop();
+    relative = path.relative(process.argv[1], directory);
+    for (const name of fs.readdirSync(directory)) {
+      const entry = path.join(directory, name);
+      relative = path.relative(process.argv[1], entry);
+      const stat = fs.lstatSync(entry);
+      if (stat.isSymbolicLink()) {
+        const target = fs.realpathSync(entry);
+        if (fs.statSync(target).isDirectory()) fs.opendirSync(target).closeSync();
+        else fs.closeSync(fs.openSync(target, 'r'));
+        links++;
+        // Link targets can be external stores; do not enumerate their contents.
+      } else if (stat.isDirectory()) pending.push(entry);
+    }
+  }
+  console.log(`Dependency links verified: ${links}; elapsedMs: ${Date.now() - started}`);
+} catch (error) {
+  const code = /^[A-Z_0-9]+$/.test(error.code || '') ? error.code : 'UNREADABLE';
+  console.error(`Dependency link validation failed at ${JSON.stringify(relative)} (${code})`);
+  process.exit(1);
+}
+'@
+  Invoke-Checked node @('-e', $inspection, $Directory) $Directory
+}
+
 foreach ($command in @('git', 'corepack', 'node')) {
   if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required command '$command' was not found." }
 }
@@ -180,6 +222,9 @@ try {
     if (-not $PassThru) { Write-Output "Already installed; active files unchanged. Existing generated code was not executed or verified. Fetched candidate retained at: $candidateDirectory" }
     return
   }
+  # pnpm junctions can contain absolute paths, so do not relocate a built checkout.
+  [IO.Directory]::Move($candidateDirectory, $versionDirectory)
+  $candidateDirectory = $versionDirectory
   if ($PassThru) {
     Invoke-Checked corepack @('pnpm', 'install', '--frozen-lockfile') $candidateDirectory | Out-Host
     Invoke-Checked corepack @('pnpm', 'build') $candidateDirectory | Out-Host
@@ -189,17 +234,14 @@ try {
   }
   $builtIdentity = Assert-CandidateIdentity $candidateDirectory
   if ($builtIdentity.Commit -ne $identity.Commit -or $builtIdentity.SkillSha256 -ne $identity.SkillSha256 -or $builtIdentity.Version -ne $identity.Version) { throw 'Runtime candidate changed during build.' }
+  if ($PassThru) { Assert-DependencyLinks $candidateDirectory | Out-Host }
+  else { Assert-DependencyLinks $candidateDirectory }
   $versionOutput = (Invoke-Checked node @('bin/c2c.js', '--version') $candidateDirectory | Out-String).Trim()
   if ($versionOutput -ne $identity.Version) { throw "Built CLI version mismatch: $versionOutput" }
   $activationIdentity = Assert-CandidateIdentity $candidateDirectory
   if ($activationIdentity.Commit -ne $identity.Commit -or $activationIdentity.SkillSha256 -ne $identity.SkillSha256 -or $activationIdentity.Version -ne $identity.Version) { throw 'Runtime candidate changed before activation.' }
   foreach ($previous in $previousFiles) {
     if (-not (Test-UnchangedFile $previous)) { throw "Activation target changed during preparation: $($previous.Path)" }
-  }
-  if ($candidateDirectory -ne $versionDirectory) {
-    if (Test-Path -LiteralPath $versionDirectory) { throw "Version directory appeared during preparation: $versionDirectory" }
-    Move-Item -LiteralPath $candidateDirectory -Destination $versionDirectory
-    $candidateDirectory = $versionDirectory
   }
   $rollbackDirectory = Join-Path $resolvedRoot ('.rollback-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $rollbackDirectory | Out-Null

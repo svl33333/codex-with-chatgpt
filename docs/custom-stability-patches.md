@@ -12,7 +12,8 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.15`
+- Custom version: `0.1.3-svl.16`
+- Publication status: source candidate; no `.16` tag or release has been published.
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -33,7 +34,7 @@ replace the custom checkout with a mutable working tree during bootstrap.
 | ChatGPT creation surface | `src/provisioning/chatgpt-surface.ts`, `src/config/endpoint.ts`, `skill/SKILL.md` | The normal custom-MCP creation route is the plugin app shell (`/plugins` → clear inherited filter → Add → Create a custom MCP server). Settings is management/recovery only; a historical deep-link redirect is route drift and must recover semantically. |
 | Runtime identity | `package.json`, `src/version.ts` | Custom releases are distinguishable from upstream releases. |
 | CLI compatibility | `src/cli/index.ts`, `tests/cli-workspace-flag.test.ts` | Machine-wide commands accept and ignore a legacy `-w`; workspace-scoped commands continue to use `-w <workspace root>`. |
-| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | Bootstrap delegates to the updater; a separately fetched candidate is verified and built before activation. Existing managed source proves an unedited Skill; unknown or installed-only content is preserved. |
+| Distribution | `scripts/bootstrap-custom-c2c.ps1`, `scripts/update-custom-c2c.ps1`, `scripts/install-codex-c2c-skill.ps1` | Bootstrap delegates to the updater; a fetched candidate is verified, reserved without overwrite at its final path, and built there before activation. Dependency links and the placed CLI are checked before active files change. Existing managed source proves an unedited Skill; unknown or installed-only content is preserved. |
 
 These modules are adapter-level foundations. The upstream browser workflow
 still performs the user-facing connector operation; callers should use the
@@ -78,6 +79,17 @@ verification additionally requires the user's ChatGPT session, connector
 authorization, and (for named endpoints) Cloudflare login; those credentials
 stay outside the repository and are not exercised by CI.
 
+Windows installation tests also run actual Corepack/pnpm install and build in
+isolated directories. They cover working final placement, broken `commander`
+and nested dependency links, destination collisions, and unchanged active
+files on preparation failure. The updater never relocates pnpm-built
+directories: absolute Windows junctions otherwise retain the old candidate
+path. It inspects local dependency metadata without traversing external store
+contents. Failed preparation retains the final directory and reports it;
+retry does not silently overwrite or adopt that inactive directory.
+An unchanged active installation remains a no-op without executing its
+existing generated code. These tests do not constitute consumer adoption.
+
 Consent correlation additionally requires the independently observed top-level
 `challengeId` to equal the registered current attempt. The CLI never substitutes
 the request ID, and a failed correlation terminalizes that request without
@@ -113,7 +125,7 @@ provider grant.
 5. Run `scripts/update-custom-c2c.ps1 -Ref <tag>`; it builds a new version
    directory and advances the user-local manifest only after verification.
 
-`bootstrap-custom-c2c.ps1` defaults to `v0.1.3-svl.15`. The updater still reads
+`bootstrap-custom-c2c.ps1` defaults to `v0.1.3-svl.16`. The updater still reads
 `runtime.json`'s ref when `-Ref` is omitted. Both accept optional
 `-ExpectedCommit`, `-ExpectedVersion`, and `-ExpectedSkillSha256`; the latter
 retains TeamAI's UTF-8/LF-normalized Skill digest meaning. Expected identities

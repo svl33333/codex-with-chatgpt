@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const sourceRoot = process.cwd();
 const fixtureRoots: string[] = [];
-const candidateVersion = "0.1.3-svl.15";
+let nativeExecutionSequence = 0;
+const candidateVersion = "0.1.3-svl.16";
 const previousVersion = "0.1.3-svl.14";
 const skillBody = "---\nname: codex-with-chatgpt\n---\nUse the in-app browser.\n";
 const shell = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], { encoding: "utf8" }).status === 0 ? "pwsh" : "powershell";
@@ -46,8 +47,8 @@ function commit(fixture: InstallationFixture, message: string): string {
   return git(fixture, "rev-parse", "HEAD");
 }
 
-function createFixture(): InstallationFixture {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "c2c installation-"));
+function createFixture(shortRoot = false): InstallationFixture {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), shortRoot ? "r31-" : "c2c installation-"));
   fixtureRoots.push(root);
   const fixture: InstallationFixture = {
     root,
@@ -81,10 +82,10 @@ function createFixture(): InstallationFixture {
   write(path.join(fixture.repository, "skill", "SKILL.md"), skillBody + "Candidate revision.\n");
   fixture.candidateCommit = commit(fixture, "candidate synthetic release");
   git(fixture, "tag", "candidate");
-  git(fixture, "tag", "v0.1.3-svl.15");
+  git(fixture, "tag", "v0.1.3-svl.16");
   fixture.skillSha256 = createHash("sha256").update(skillBody + "Candidate revision.\n").digest("hex");
   write(path.join(fixture.commandDirectory, "corepack.cmd"), `@echo off\r\n"${process.execPath}" "${path.join(fixture.root, "build.cjs")}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
-  write(path.join(fixture.root, "build.cjs"), "const fs=require('node:fs'); const path=require('node:path'); if(process.argv.includes('build')) {fs.mkdirSync('dist',{recursive:true}); fs.writeFileSync('dist/fixture.txt','built'); if(process.env.C2C_FIXTURE_BUILD_ACTION) {eval(process.env.C2C_FIXTURE_BUILD_ACTION);}}\n");
+  write(path.join(fixture.root, "build.cjs"), "const fs=require('node:fs'); const path=require('node:path'); if(process.argv.includes('build')) {fs.mkdirSync('node_modules',{recursive:true}); fs.mkdirSync('dist',{recursive:true}); fs.writeFileSync('dist/fixture.txt','built'); if(process.env.C2C_FIXTURE_BUILD_ACTION) {eval(process.env.C2C_FIXTURE_BUILD_ACTION);}}\n");
   write(path.join(fixture.codexHome, "ui-prefs.json"), '{"setupMode":"manual","fixture":"preserve"}\r\n');
   return fixture;
 }
@@ -101,6 +102,8 @@ function invoke(fixture: InstallationFixture, options: {
   lock?: string;
   buildAction?: string;
   parentScript?: string;
+  timeout?: number;
+  environment?: NodeJS.ProcessEnv;
 } = {}) {
   const args = ["-Repository", fixture.repository, "-InstallRoot", fixture.installRoot];
   if (options.ref !== null) args.push("-Ref", options.ref ?? "candidate");
@@ -110,10 +113,11 @@ function invoke(fixture: InstallationFixture, options: {
   }
   const script = path.join(fixture.driverDirectory, options.bootstrap ? "bootstrap-custom-c2c.ps1" : "update-custom-c2c.ps1");
   const command = options.parentScript ?? `$ErrorActionPreference='Stop'; ${options.lock ? `$held=[IO.File]::Open(${quote(options.lock)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); try {` : ""} & ${quote(script)} ${args.map((argument, index) => index % 2 === 0 ? argument : quote(argument)).join(" ")} ${options.lock ? "} finally { $held.Dispose() }" : ""}`;
-  const execution = spawnSync(shell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+  const argv = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command];
+  const execution = spawnSync(shell, argv, {
     cwd: fixture.root,
     encoding: "utf8",
-    timeout: 25_000,
+    timeout: options.timeout ?? 25_000,
     env: {
       ...process.env,
       PATH: `${fixture.commandDirectory}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -123,9 +127,10 @@ function invoke(fixture: InstallationFixture, options: {
       GIT_CONFIG_GLOBAL: fixture.emptyConfig,
       GIT_TERMINAL_PROMPT: "0",
       C2C_FIXTURE_BUILD_ACTION: options.buildAction ?? "",
+      ...options.environment,
     },
   });
-  return { ...execution, stderr: execution.stderr.replace(/\r?\n\s*\|\s*/g, " ") };
+  return { ...execution, argv: [shell, ...argv], stderr: execution.stderr.replace(/\r?\n\s*\|\s*/g, " ") };
 }
 
 function activePaths(fixture: InstallationFixture): string[] {
@@ -173,15 +178,162 @@ function createMutationActor(fixture: InstallationFixture, target: string, mode:
   return actor;
 }
 
+function preserveNativeExecution(fixture: InstallationFixture, label: string, execution: unknown): void {
+  const evidence = process.env.C2C_INSTALLATION_EVIDENCE_DIR;
+  if (evidence) {
+    fs.mkdirSync(evidence, { recursive: true });
+    fs.writeFileSync(path.join(evidence, `${path.basename(fixture.root)}-${++nativeExecutionSequence}-${label}.json`), JSON.stringify(execution, null, 2), { flag: "wx" });
+  }
+}
+
+function createRealPnpmFixture(): InstallationFixture {
+  const fixture = createFixture(true);
+  installPrevious(fixture);
+  const tracked = spawnSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" });
+  expect(tracked.status, tracked.stderr).toBe(0);
+  const inputs: Record<string, string> = {};
+  for (const name of tracked.stdout.split("\0").filter(Boolean)) {
+    if (name.startsWith(".harness/") || name.startsWith(".maintenance-bootstrap/")) continue;
+    const bytes = fs.readFileSync(path.join(sourceRoot, name));
+    write(path.join(fixture.repository, name), bytes);
+    inputs[name] = createHash("sha256").update(bytes).digest("hex");
+  }
+  fixture.candidateCommit = commit(fixture, "current public Runtime source fixture");
+  git(fixture, "tag", "-f", "candidate");
+  fixture.skillSha256 = createHash("sha256").update(fs.readFileSync(path.join(fixture.repository, "skill/SKILL.md"), "utf8").replace(/\r\n?/g, "\n")).digest("hex");
+  const locations = spawnSync("where.exe", ["corepack.cmd"], { encoding: "utf8" });
+  const corepack = locations.stdout.split(/\r?\n/).find(location => fs.existsSync(location) && !location.startsWith(fixture.commandDirectory));
+  expect(corepack, "A real Corepack executable is required on Windows").toBeTruthy();
+  write(path.join(fixture.root, "real-corepack.cjs"), `const {spawnSync}=require('node:child_process');const fs=require('node:fs');const path=require('node:path');const argv=process.argv.slice(2);const child=spawnSync(process.env.ComSpec||'cmd.exe',['/d','/s','/c','""'+${JSON.stringify(corepack)}+'" '+argv.join(' ')+'"'],{stdio:'inherit',windowsVerbatimArguments:true});if(child.status!==0)process.exit(child.status||1);if(argv.includes('build')){if(process.env.C2C_FIXTURE_BUILD_ACTION)eval(process.env.C2C_FIXTURE_BUILD_ACTION);}\n`);
+  write(path.join(fixture.commandDirectory, "corepack.cmd"), `@echo off\r\n"${process.execPath}" "${path.join(fixture.root, "real-corepack.cjs")}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+  preserveNativeExecution(fixture, "inputs", { source: inputs, fixtureCommit: fixture.candidateCommit, skillSha256: fixture.skillSha256, realCorepack: corepack, node: process.execPath, nodeVersion: process.version, packageManager: JSON.parse(fs.readFileSync(path.join(fixture.repository, "package.json"), "utf8")).packageManager });
+  return fixture;
+}
+
+function invokeRealPnpm(fixture: InstallationFixture, buildAction = "") {
+  const directories = Object.fromEntries(["home", "appdata", "local", "temp", "corepack", "store", "cache", "state"].map(name => [name, path.join(fixture.root, name)]));
+  for (const directory of Object.values(directories)) fs.mkdirSync(directory, { recursive: true });
+  const globalConfig = path.join(fixture.root, "empty-npm-global");
+  write(globalConfig, "");
+  const startedAt = new Date().toISOString();
+  const execution = invoke(fixture, { expectations: true, timeout: 180_000, buildAction, environment: {
+    HOME: directories.home, USERPROFILE: directories.home, APPDATA: directories.appdata, LOCALAPPDATA: directories.local,
+    TEMP: directories.temp, TMP: directories.temp, COREPACK_HOME: directories.corepack, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+    C2C_STATE_DIR: directories.state, NPM_CONFIG_USERCONFIG: fixture.emptyConfig, NPM_CONFIG_GLOBALCONFIG: globalConfig,
+    NPM_CONFIG_STORE_DIR: directories.store, NPM_CONFIG_CACHE: directories.cache, NPM_CONFIG_NODE_LINKER: "isolated",
+    NPM_TOKEN: "", NODE_AUTH_TOKEN: "",
+  } });
+  preserveNativeExecution(fixture, "execution", { startedAt, finishedAt: new Date().toISOString(), shell, argv: execution.argv, cwd: fixture.root, status: execution.status, signal: execution.signal, error: execution.error?.message, stdout: execution.stdout, stderr: execution.stderr });
+  return execution;
+}
+
+describe.runIf(process.platform === "win32")("real Windows pnpm final placement", () => {
+  it("W01 builds at the final path and activates working CLI and all declared dependencies", () => {
+    const fixture = createRealPnpmFixture();
+    const execution = invokeRealPnpm(fixture);
+    expect(execution.status, execution.stdout + execution.stderr).toBe(0);
+    const checkout = path.join(fixture.installRoot, "candidate");
+    const cli = spawnSync(process.execPath, ["bin/c2c.js", "--version"], { cwd: checkout, encoding: "utf8" });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout.trim()).toBe(candidateVersion);
+    const dependencies = Object.keys(JSON.parse(fs.readFileSync(path.join(checkout, "package.json"), "utf8")).dependencies);
+    for (const dependency of dependencies) expect(fs.statSync(fs.realpathSync(path.join(checkout, "node_modules", dependency))).isDirectory()).toBe(true);
+    const imports = spawnSync(process.execPath, ["--input-type=module", "-e", "await import('commander'); await import('express'); await import('ignore'); await import('zod'); await import('@modelcontextprotocol/sdk/client/index.js');"], { cwd: checkout, encoding: "utf8" });
+    expect(imports.status, imports.stderr).toBe(0);
+    const verified = /Dependency links verified: (\d+); elapsedMs: (\d+)/.exec(execution.stdout);
+    expect(Number(verified?.[1])).toBeGreaterThan(dependencies.length);
+    const manifest = JSON.parse(fs.readFileSync(activePaths(fixture)[0], "utf8"));
+    expect(manifest.checkout).toBe(checkout);
+    expect(manifest.commit).toBe(fixture.candidateCommit);
+    expect(fs.readFileSync(activePaths(fixture)[2])).toEqual(fs.readFileSync(path.join(checkout, "skill/SKILL.md")));
+    expect(fs.readFileSync(activePaths(fixture)[4], "utf8")).toContain('"setupMode":"manual"');
+    const noOp = invokeRealPnpm(fixture, "throw new Error('no-op must not build');");
+    expect(noOp.status, noOp.stderr).toBe(0);
+    expect(noOp.stdout).toContain("Existing generated code was not executed or verified");
+    preserveNativeExecution(fixture, "acceptance", { cli: { status: cli.status, stdout: cli.stdout }, dependencyCount: dependencies.length, linkCount: Number(verified?.[1]), inspectionElapsedMs: Number(verified?.[2]), noOpStatus: noOp.status });
+  }, 180_000);
+
+  it.each(["commander", "nested"])("rejects real pnpm %s link corruption before activation", kind => {
+    const fixture = createRealPnpmFixture();
+    const before = snapshot(fixture);
+    const action = kind === "commander"
+      ? "const target=path.join(process.cwd(),'node_modules','commander');fs.unlinkSync(target);fs.symlinkSync(path.join(process.cwd(),'missing-commander'),target,'junction');"
+      : "const store=path.join(process.cwd(),'node_modules','.pnpm');const dependency=fs.readdirSync(store).find(name=>name.startsWith('vitest@'));if(!dependency)throw new Error('real nested dependency not found');const target=path.join(store,dependency,'node_modules','vite');if(!fs.lstatSync(target).isSymbolicLink())throw new Error('real nested pnpm link required');fs.unlinkSync(target);fs.symlinkSync(path.join(process.cwd(),'missing-nested'),target,'junction');const cli=spawnSync(process.execPath,['bin/c2c.js','--version'],{encoding:'utf8'});if(cli.status!==0)throw new Error('W03 requires working CLI');console.log('W03 CLI still succeeds: '+cli.stdout.trim());";
+    const execution = invokeRealPnpm(fixture, action);
+    expect(execution.status).not.toBe(0);
+    expect(execution.stderr).toContain("Dependency link validation failed");
+    expect(execution.stderr).toContain(kind === "commander" ? "commander" : "vite");
+    expect(execution.stderr).not.toContain(kind === "commander" ? "missing-commander" : "missing-nested");
+    if (kind === "nested") expect(execution.stdout).toContain(`W03 CLI still succeeds: ${candidateVersion}`);
+    expect(snapshot(fixture)).toEqual(before);
+    expect(fs.existsSync(path.join(fixture.installRoot, "candidate", "dist"))).toBe(true);
+  }, 180_000);
+});
+
 afterEach(() => {
   for (const root of fixtureRoots.splice(0)) {
     const resolved = path.resolve(root);
-    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith("c2c installation-")) throw new Error("Unexpected fixture cleanup target");
+    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !/^(c2c installation-|r31-)/.test(path.basename(resolved))) throw new Error("Unexpected fixture cleanup target");
     fs.rmSync(resolved, { recursive: true, force: true });
   }
 });
 
 describe.runIf(process.platform === "win32")("isolated Runtime installation", () => {
+  it("W04 preserves a foreign directory appearing immediately before final-path reservation", () => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    const driver = path.join(fixture.driverDirectory, "update-custom-c2c.ps1");
+    const reservation = "[IO.Directory]::Move($candidateDirectory, $versionDirectory)";
+    const source = fs.readFileSync(driver, "utf8");
+    expect(source).toContain(reservation);
+    write(driver, source.replace(reservation, `New-Item -ItemType Directory -Path $versionDirectory | Out-Null; [IO.File]::WriteAllText((Join-Path $versionDirectory 'foreign.txt'),'foreign owner'); ${reservation}`));
+    const execution = invoke(fixture);
+    expect(execution.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+    const collision = path.join(fixture.installRoot, "candidate");
+    expect(fs.readdirSync(collision)).toEqual(["foreign.txt"]);
+    expect(fs.readFileSync(path.join(collision, "foreign.txt"), "utf8")).toBe("foreign owner");
+  });
+
+  it.each(["build", "CLI", "missing dependencies", "linked root", "circular link"])("W05 preserves active files and reports the final prepared path on %s failure", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    const actions: Record<string, string> = {
+      build: "throw new Error('synthetic build failure');",
+      CLI: "fs.writeFileSync('dist/cli.cjs',`throw new Error('synthetic CLI failure');`);",
+      "missing dependencies": "fs.rmdirSync('node_modules');",
+      "linked root": "fs.rmdirSync('node_modules');fs.mkdirSync('dist/external-store');fs.symlinkSync(require('node:path').resolve('dist/external-store'),'node_modules','junction');",
+      "circular link": "fs.symlinkSync(require('node:path').resolve('node_modules/cycle'),'node_modules/cycle','junction');",
+    };
+    const execution = invoke(fixture, { buildAction: actions[kind] });
+    expect(execution.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+    expect(execution.stderr).toContain(`Prepared candidate retained at: ${path.join(fixture.installRoot, "candidate")}`);
+  });
+
+  it("rejects an ACL-unreadable link target without changing active files or disclosing its path", () => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    const target = path.join(fixture.root, "denied-external-target");
+    fs.mkdirSync(target);
+    const deny = spawnSync("icacls.exe", [target, "/deny", "*S-1-1-0:(RD)"], { encoding: "utf8" });
+    expect(deny.status, deny.stderr).toBe(0);
+    try {
+      const execution = invoke(fixture, { buildAction: `fs.symlinkSync(${JSON.stringify(target)},'node_modules/unreadable','junction');` });
+      expect(execution.status).not.toBe(0);
+      expect(execution.stderr).toContain("Dependency link validation failed");
+      expect(execution.stderr).toContain("unreadable");
+      expect(execution.stderr).not.toContain("denied-external-target");
+      expect(snapshot(fixture)).toEqual(before);
+    } finally {
+      const restore = spawnSync("icacls.exe", [target, "/remove:d", "*S-1-1-0"], { encoding: "utf8" });
+      expect(restore.status, restore.stderr).toBe(0);
+    }
+  });
+
   it("installs the exact candidate and leaves an unchanged active version as a no-op without executing generated code", () => {
     const fixture = createFixture();
     const installed = invoke(fixture, { bootstrap: true, expectations: true });
@@ -208,7 +360,7 @@ describe.runIf(process.platform === "win32")("isolated Runtime installation", ()
     const fixture = createFixture();
     const installed = invoke(fixture, { bootstrap: true, ref: null });
     expect(installed.status, installed.stderr).toBe(0);
-    expect(JSON.parse(fs.readFileSync(activePaths(fixture)[0], "utf8")).ref).toBe("v0.1.3-svl.15");
+    expect(JSON.parse(fs.readFileSync(activePaths(fixture)[0], "utf8")).ref).toBe("v0.1.3-svl.16");
     const updated = invoke(fixture, { ref: null });
     expect(updated.status, updated.stderr).toBe(0);
   });
