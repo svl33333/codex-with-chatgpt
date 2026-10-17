@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
-const candidateVersion = "0.1.3-svl.16";
-const candidateRef = "v0.1.3-svl.16";
+const candidateVersion = "0.1.3-svl.17";
+const candidateRef = "v0.1.3-svl.17";
 
 function read(relative: string): string {
   return fs.readFileSync(path.join(root, relative), "utf8");
@@ -15,7 +15,10 @@ describe("custom runtime release consistency", () => {
     const packageJson = JSON.parse(read("package.json")) as { version: string };
     expect(packageJson.version).toBe(candidateVersion);
     expect(read("src/version.ts")).toContain(`VERSION = "${candidateVersion}"`);
-    expect(read("docs/custom-stability-patches.md")).toContain(`Custom version: \`${candidateVersion}\``);
+    const provenanceDocument = read("docs/custom-stability-patches.md");
+    expect(provenanceDocument).toContain(`Custom version: \`${candidateVersion}\``);
+    expect(provenanceDocument).toContain("Publication status: source candidate; no `.17` tag or release has been published.");
+    expect(provenanceDocument).toContain("Previous immutable tag: `v0.1.3-svl.16` at `9b80750bd55cd6f526b78c01dacab649ea04d9c4`.");
     expect(read("scripts/bootstrap-custom-c2c.ps1")).toContain(`[string]$Ref = "${candidateRef}"`);
     expect(read("scripts/install-codex-c2c-skill.ps1")).toContain(`[string]$Ref = "${candidateRef}"`);
   });

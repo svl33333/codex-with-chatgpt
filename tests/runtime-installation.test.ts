@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const sourceRoot = process.cwd();
 const fixtureRoots: string[] = [];
 let nativeExecutionSequence = 0;
-const candidateVersion = "0.1.3-svl.16";
+const candidateVersion = "0.1.3-svl.17";
 const previousVersion = "0.1.3-svl.14";
 const skillBody = "---\nname: codex-with-chatgpt\n---\nUse the in-app browser.\n";
 const shell = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], { encoding: "utf8" }).status === 0 ? "pwsh" : "powershell";
@@ -82,7 +82,7 @@ function createFixture(shortRoot = false): InstallationFixture {
   write(path.join(fixture.repository, "skill", "SKILL.md"), skillBody + "Candidate revision.\n");
   fixture.candidateCommit = commit(fixture, "candidate synthetic release");
   git(fixture, "tag", "candidate");
-  git(fixture, "tag", "v0.1.3-svl.16");
+  git(fixture, "tag", "v0.1.3-svl.17");
   fixture.skillSha256 = createHash("sha256").update(skillBody + "Candidate revision.\n").digest("hex");
   write(path.join(fixture.commandDirectory, "corepack.cmd"), `@echo off\r\n"${process.execPath}" "${path.join(fixture.root, "build.cjs")}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
   write(path.join(fixture.root, "build.cjs"), "const fs=require('node:fs'); const path=require('node:path'); if(process.argv.includes('build')) {fs.mkdirSync('node_modules',{recursive:true}); fs.mkdirSync('dist',{recursive:true}); fs.writeFileSync('dist/fixture.txt','built'); if(process.env.C2C_FIXTURE_BUILD_ACTION) {eval(process.env.C2C_FIXTURE_BUILD_ACTION);}}\n");
@@ -556,7 +556,7 @@ describe.runIf(process.platform === "win32")("isolated Runtime installation", ()
     const fixture = createFixture();
     const installed = invoke(fixture, { bootstrap: true, ref: null });
     expect(installed.status, installed.stderr).toBe(0);
-    expect(JSON.parse(fs.readFileSync(activePaths(fixture)[0], "utf8")).ref).toBe("v0.1.3-svl.16");
+    expect(JSON.parse(fs.readFileSync(activePaths(fixture)[0], "utf8")).ref).toBe("v0.1.3-svl.17");
     const updated = invoke(fixture, { ref: null });
     expect(updated.status, updated.stderr).toBe(0);
   });
