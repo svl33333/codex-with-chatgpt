@@ -186,6 +186,202 @@ function preserveNativeExecution(fixture: InstallationFixture, label: string, ex
   }
 }
 
+function invokeSkill(fixture: InstallationFixture, source = path.join(fixture.repository, "skill", "SKILL.md"), prefix = "", passThru = false, suffix = "") {
+  const installer = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+  const command = `${prefix}\n& ${quote(installer)} -SourceSkill ${quote(source)} -Destination ${quote(path.dirname(activePaths(fixture)[2]))} -Repository ${quote(fixture.repository)} -Ref candidate -Commit ${quote(fixture.candidateCommit)} ${passThru ? "-PassThru" : ""}\n${suffix}`;
+  const startedAt = new Date().toISOString();
+  const execution = invoke(fixture, { parentScript: `$ErrorActionPreference='Stop'; ${command}` });
+  preserveNativeExecution(fixture, "appdata", { startedAt, finishedAt: new Date().toISOString(), argv: execution.argv, status: execution.status, stdout: execution.stdout, stderr: execution.stderr });
+  return execution;
+}
+
+function replaceSkillMetadata(fixture: InstallationFixture, values: Record<string, unknown>): void {
+  const target = activePaths(fixture)[3];
+  write(target, JSON.stringify({ ...JSON.parse(fs.readFileSync(target, "utf8")), ...values }));
+}
+
+describe.runIf(process.platform === "win32")("AppData managed Skill source identity", () => {
+  it.each([false, true])("accepts equivalent native path forms and releases handles in the same process, PassThru=%s", passThru => {
+    const fixture = createFixture();
+    git(fixture, "remote", "add", "origin", fixture.repository);
+    installPrevious(fixture);
+    const metadata = JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8"));
+    replaceSkillMetadata(fixture, { source: path.toNamespacedPath(metadata.source) });
+    const source = path.join(fixture.repository, "skill", "SKILL.md");
+    const measure = path.join(fixture.root, "source-guard-measurement.json");
+    const script = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    const hook = "foreach ($read in $sourceReads) { Assert-SkillSource $read }";
+    write(script, fs.readFileSync(script, "utf8").replace(hook, `${hook}; [IO.File]::WriteAllText(${quote(measure)},([ordered]@{heldSourceHandles=$sourceReads.Count;elapsedMilliseconds=$started.Elapsed.TotalMilliseconds}|ConvertTo-Json))`));
+    const releaseProof = `foreach($path in @(${quote(source)},${quote(metadata.source)})){$probe=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$probe.Dispose()}`;
+    const invocation = passThru ? `$returned=@(& ${quote(script)} -SourceSkill ${quote(source)} -Destination ${quote(path.dirname(activePaths(fixture)[2]))} -Repository ${quote(fixture.repository)} -Ref candidate -Commit ${quote(fixture.candidateCommit)} -PassThru); if($returned.Count -ne 2){throw 'Expected real write records'}; try { ${releaseProof} } finally {foreach($written in $returned){$written.OwnedFile.Dispose()}}` : undefined;
+    const execution = invocation ? invoke(fixture, { parentScript: `$ErrorActionPreference='Stop';$started=[Diagnostics.Stopwatch]::StartNew();${invocation}` }) : invokeSkill(fixture, undefined, "$started=[Diagnostics.Stopwatch]::StartNew()", false, releaseProof);
+    expect(execution.status, execution.stderr).toBe(0);
+    const measurement = JSON.parse(fs.readFileSync(measure, "utf8"));
+    expect(measurement.heldSourceHandles).toBe(5);
+    expect(measurement.elapsedMilliseconds).toBeGreaterThanOrEqual(0);
+    preserveNativeExecution(fixture, "source-guard-lifetime-cost", { passThru, measurement, status: execution.status, argv: execution.argv, stdout: execution.stdout, stderr: execution.stderr });
+    const installed = snapshot(fixture);
+    const noOp = invokeSkill(fixture, undefined, "$started=[Diagnostics.Stopwatch]::StartNew()", passThru, releaseProof);
+    expect(noOp.status, noOp.stderr).toBe(0);
+    expect(snapshot(fixture)).toEqual(installed);
+  });
+
+  it.skipIf(!process.env.C2C_APPDATA_SOURCE)("upgrades only an isolated destination using the actual read-only AppData source", () => {
+    const fixture = createFixture();
+    const logical = process.env.C2C_APPDATA_SOURCE!;
+    const readGit = (...args: string[]) => {
+      const execution = spawnSync("git", ["-C", path.dirname(logical), ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      expect(execution.status, execution.stderr).toBe(0);
+      return execution.stdout.trim();
+    };
+    const root = readGit("rev-parse", "--show-toplevel");
+    const physical = path.join(root, "skill", "SKILL.md");
+    expect(path.resolve(logical).toLowerCase()).not.toBe(path.resolve(physical).toLowerCase());
+    const sourceBytes = fs.readFileSync(logical);
+    const gitPath = (name: string) => path.resolve(readGit("rev-parse", "--path-format=absolute", "--git-path", name));
+    const protectedFiles = [logical, gitPath("index"), gitPath("config")];
+    const before = protectedFiles.map(file => createHash("sha256").update(fs.readFileSync(file)).digest("hex"));
+    const destination = path.dirname(activePaths(fixture)[2]);
+    write(activePaths(fixture)[2], sourceBytes);
+    write(activePaths(fixture)[3], JSON.stringify({ repository: readGit("remote", "get-url", "origin"), commit: readGit("rev-parse", "HEAD"), source: logical, destination, ref: "previous" }));
+    // Only the synthetic metadata/destination use the real public old source; no old CLI executes.
+    const installer = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    const command = `$ErrorActionPreference='Stop'; & ${quote(installer)} -SourceSkill ${quote(path.join(fixture.repository, "skill", "SKILL.md"))} -Destination ${quote(destination)} -Repository ${quote(readGit("remote", "get-url", "origin"))} -Ref candidate -Commit ${quote(fixture.candidateCommit)}`;
+    const startedAt = new Date().toISOString();
+    try {
+      const execution = invoke(fixture, { parentScript: command, environment: { GIT_OPTIONAL_LOCKS: "0" } });
+      preserveNativeExecution(fixture, "actual-appdata-read-only", { startedAt, finishedAt: new Date().toISOString(), argv: execution.argv, status: execution.status, stdout: execution.stdout, stderr: execution.stderr, actualSourceReadOnly: true, syntheticDestination: true });
+      expect(execution.status, execution.stderr).toBe(0);
+      expect(fs.readFileSync(activePaths(fixture)[2])).toEqual(fs.readFileSync(path.join(fixture.repository, "skill", "SKILL.md")));
+    } finally {
+      const after = protectedFiles.map(file => createHash("sha256").update(fs.readFileSync(file)).digest("hex"));
+      preserveNativeExecution(fixture, "actual-appdata-input-preservation", { beforeSha256: before, afterSha256: after, sourceIndexConfigUnchanged: JSON.stringify(after) === JSON.stringify(before) });
+      expect(after).toEqual(before);
+    }
+  });
+
+  it.each(["copy", "hardlink"])("rejects an unmanaged %s with identical bytes and unchanged Git commit", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const metadata = JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8"));
+    const unmanaged = path.join(path.dirname(metadata.source), "alias", "SKILL.md");
+    fs.mkdirSync(path.dirname(unmanaged));
+    if (kind === "hardlink") fs.linkSync(metadata.source, unmanaged); else fs.copyFileSync(metadata.source, unmanaged);
+    replaceSkillMetadata(fixture, { source: unmanaged });
+    const before = snapshot(fixture);
+    const execution = invokeSkill(fixture);
+    expect(execution.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+    expect(fs.readFileSync(unmanaged)).toEqual(fs.readFileSync(metadata.source));
+  });
+
+  it("rejects a file symlink source without weakening unavailable-privilege reporting", context => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const source = JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8")).source;
+    const alias = path.join(fixture.root, "source-symlink", "SKILL.md");
+    fs.mkdirSync(path.dirname(alias));
+    try { fs.symlinkSync(source, alias, "file"); }
+    catch (error) {
+      if (!["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      preserveNativeExecution(fixture, "symlink-capability", { status: "NOT_RUN", reason: "Windows file symlink privilege unavailable" });
+      context.skip();
+      return;
+    }
+    replaceSkillMetadata(fixture, { source: alias });
+    const before = snapshot(fixture);
+    const execution = invokeSkill(fixture);
+    expect(execution.status).not.toBe(0);
+    expect(execution.stderr).toContain("linked installation path");
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it.each(["commit", "destination", "origin", "tracked source"])("preserves metadata/Git %s refusal", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const source = JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8")).source;
+    if (kind === "commit") replaceSkillMetadata(fixture, { commit: "0".repeat(40) });
+    if (kind === "destination") replaceSkillMetadata(fixture, { destination: path.join(fixture.root, "other") });
+    if (kind === "origin") git({ ...fixture, repository: path.dirname(path.dirname(source)) }, "remote", "set-url", "origin", "https://example.invalid/foreign.git");
+    if (kind === "tracked source") fs.appendFileSync(source, "changed tracked source\n");
+    const before = snapshot(fixture);
+    const execution = invokeSkill(fixture);
+    expect(execution.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it("refuses an unreadable candidate sharing lock before any write", () => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const before = snapshot(fixture);
+    const source = path.join(fixture.repository, "skill", "SKILL.md");
+    const execution = invokeSkill(fixture, undefined, `$held=[IO.File]::Open(${quote(source)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None);try {`, false, "} finally {$held.Dispose()}");
+    expect(execution.status).not.toBe(0);
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it.each(["old", "candidate", "canonical"])("rejects a junction ancestor in the %s source", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const old = JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8")).source;
+    const source = kind === "candidate" ? path.join(fixture.repository, "skill", "SKILL.md") : old;
+    const alias = path.join(fixture.root, "linked-source");
+    fs.symlinkSync(path.dirname(source), alias, "junction");
+    if (kind === "old") replaceSkillMetadata(fixture, { source: path.join(alias, "SKILL.md") });
+    if (kind === "canonical") {
+      const script = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+      write(script, fs.readFileSync(script, "utf8").replace("$managedRead = Open-SkillSource", `$previousRoot = ${quote(path.dirname(alias))}; $managedRead = Open-SkillSource`).replace("(Join-Path $previousRoot 'skill\\SKILL.md')", `(Join-Path ${quote(alias)} 'SKILL.md')`));
+    }
+    const before = snapshot(fixture);
+    const execution = invokeSkill(fixture, kind === "candidate" ? path.join(alias, "SKILL.md") : undefined);
+    expect(execution.status).not.toBe(0);
+    expect(execution.stderr).toContain("linked installation path");
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it.each(["final-name failure", "second-query failure", "name growth", "stale native type"])("fails closed for %s and releases source handles before the failure caller returns", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    let prefix = "";
+    if (kind === "stale native type") prefix = "Add-Type 'public static class C2CFileRollback { public static byte[] CaptureIdentity(Microsoft.Win32.SafeHandles.SafeFileHandle h) { return new byte[24]; } }'";
+    else {
+      const script = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+      let text = fs.readFileSync(script, "utf8");
+      if (kind === "final-name failure") text = text.replace("uint needed = GetFinalPathNameByHandleW(handle, null, 0, 0);", "uint needed = 0;");
+      else text = text.replace("uint length = GetFinalPathNameByHandleW(handle, name, (uint)name.Capacity, 0);", kind === "second-query failure" ? "uint length = 0;" : "uint length = (uint)name.Capacity;");
+      write(script, text);
+    }
+    const before = snapshot(fixture);
+    const source = path.join(fixture.repository, "skill", "SKILL.md");
+    const failureProof = path.join(fixture.root, "failure-source-released");
+    const execution = invokeSkill(fixture, undefined, prefix + "; try {", false, `} catch { $failure=$_; $probe=[IO.File]::Open(${quote(source)},[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$probe.Dispose();[IO.File]::WriteAllText(${quote(failureProof)},'released in live caller');throw $failure }`);
+    expect(execution.status).not.toBe(0);
+    expect(fs.readFileSync(failureProof, "utf8")).toBe("released in live caller");
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it.each(["old", "candidate", "candidate capture"])("holds the %s source against edit, replacement and parent rename through use", kind => {
+    const fixture = createFixture();
+    installPrevious(fixture);
+    const target = kind === "old" ? JSON.parse(fs.readFileSync(activePaths(fixture)[3], "utf8")).source : path.join(fixture.repository, "skill", "SKILL.md");
+    const before = fs.readFileSync(target);
+    const proof = path.join(fixture.root, "source-guard-proof.json");
+    const actor = path.join(fixture.root, "source-guard-actor.cjs");
+    write(actor, `const fs=require('node:fs'),path=require('node:path');const target=${JSON.stringify(target)};const p={edit:false,replace:false,parentRename:false};for(const [key,action]of [['edit',()=>fs.writeFileSync(target,'user edit')],['replace',()=>fs.renameSync(target,target+'.replaced')],['parentRename',()=>fs.renameSync(path.dirname(target),path.dirname(target)+'.moved')]]){try{action()}catch{p[key]=true}}fs.writeFileSync(${JSON.stringify(proof)},JSON.stringify(p));`);
+    const script = path.join(fixture.driverDirectory, "install-codex-c2c-skill.ps1");
+    const hook = kind === "candidate capture" ? "  $bytes = New-Object byte[] $stream.Length" : "foreach ($read in $sourceReads) { Assert-SkillSource $read }";
+    const text = fs.readFileSync(script, "utf8");
+    expect(text).toContain(hook);
+    write(script, text.replace(hook, `if (${kind === "candidate capture" ? `$Path -eq ${quote(target)}` : "$true"}) { & ${quote(process.execPath)} ${quote(actor)}; if ($LASTEXITCODE -ne 0) { throw 'source actor failed' } }; ${hook}`));
+    const execution = invokeSkill(fixture);
+    expect(execution.status, execution.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(proof, "utf8"))).toEqual({ edit: true, replace: true, parentRename: true });
+    expect(fs.readFileSync(target)).toEqual(before);
+    fs.renameSync(target, target + ".released");
+    fs.renameSync(target + ".released", target);
+  });
+});
+
 function createRealPnpmFixture(): InstallationFixture {
   const fixture = createFixture(true);
   installPrevious(fixture);

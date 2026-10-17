@@ -15,6 +15,7 @@ using System;
 using System.IO;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 public static class C2CFileRollback {
@@ -28,6 +29,8 @@ public static class C2CFileRollback {
   private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int kind, byte[] buffer, uint size);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
   private static extern uint GetFileAttributesW(string path);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder name, uint size, uint flags);
 
   public static byte[] CaptureIdentity(SafeFileHandle handle) {
     byte[] identity = new byte[24];
@@ -44,6 +47,24 @@ public static class C2CFileRollback {
   public static void AssertSameFile(SafeFileHandle actual, FileStream ownedFile) {
     if (ownedFile == null || ownedFile.SafeFileHandle.IsClosed) throw new IOException("File ownership handle is unavailable; residual file preserved");
     if (!MatchesBytes(CaptureIdentity(actual), CaptureIdentity(ownedFile.SafeFileHandle))) throw new IOException("File identity changed; residual file preserved");
+  }
+
+  private static string ResolveFinalSourceName(SafeFileHandle handle) {
+    uint needed = GetFinalPathNameByHandleW(handle, null, 0, 0);
+    if (needed == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve managed Skill source");
+    var name = new StringBuilder(checked((int)needed));
+    uint length = GetFinalPathNameByHandleW(handle, name, (uint)name.Capacity, 0);
+    if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve managed Skill source");
+    if (length >= name.Capacity) throw new IOException("Managed Skill source name changed during query");
+    return name.ToString();
+  }
+
+  public static void AssertManagedSource(FileStream actual, FileStream managed) {
+    AssertSameFile(actual.SafeFileHandle, managed);
+    // A matching file ID also admits unrelated hardlink names outside Git's managed entry.
+    if (!String.Equals(ResolveFinalSourceName(actual.SafeFileHandle), ResolveFinalSourceName(managed.SafeFileHandle), StringComparison.Ordinal)) {
+      throw new IOException("Skill source is not the managed file entry");
+    }
   }
 
   public static void DeleteOwnedFile(string path, FileStream ownedFile, byte[] written) {
@@ -92,6 +113,31 @@ function Read-Git([string]$Directory, [string[]]$Arguments) {
   $output = & git -C $Directory @Arguments 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Cannot verify existing Skill source: $Directory" }
   return ($output | Out-String).Trim()
+}
+
+function Open-SkillSource([string]$Path) {
+  Assert-OrdinaryPath $Path
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $guard = [pscustomobject]@{ Path = $Path; Stream = $stream; Bytes = $null }
+  [void]$sourceReads.Add($guard)
+  [void][C2CFileRollback]::CaptureIdentity($stream.SafeFileHandle)
+  Assert-OrdinaryPath $Path
+  $bytes = New-Object byte[] $stream.Length
+  $offset = 0
+  while ($offset -lt $bytes.Length) {
+    $count = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+    if ($count -eq 0) { throw 'Cannot read the complete Skill source' }
+    $offset += $count
+  }
+  $guard.Bytes = $bytes
+  return $guard
+}
+
+function Assert-SkillSource($Guard) {
+  Assert-OrdinaryPath $Guard.Path
+  $current = [IO.File]::Open($Guard.Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try { [C2CFileRollback]::AssertManagedSource($current, $Guard.Stream) }
+  finally { $current.Dispose() }
 }
 
 function Write-SkillFile($Previous, [byte[]]$Bytes, [IO.FileStream]$OwnedFile) {
@@ -179,32 +225,41 @@ function Assert-ExistingSkill {
   $previousSource = [IO.Path]::GetFullPath([string]$metadata.source)
   Assert-OrdinaryPath $previousSource
   if (-not (Test-Path -LiteralPath $previousSource -PathType Leaf)) { throw "Existing Skill source is unavailable: $previousSource" }
+  $previousRead = Open-SkillSource $previousSource
   $previousRoot = Read-Git (Split-Path $previousSource -Parent) @('rev-parse', '--show-toplevel')
-  if ($previousSource -ne [IO.Path]::GetFullPath((Join-Path $previousRoot 'skill\SKILL.md')) -or
-      (Read-Git $previousRoot @('rev-parse', 'HEAD')) -ne $metadata.commit -or
+  $managedRead = Open-SkillSource ([IO.Path]::GetFullPath((Join-Path $previousRoot 'skill\SKILL.md')))
+  [C2CFileRollback]::AssertManagedSource($previousRead.Stream, $managedRead.Stream)
+  Assert-SkillSource $previousRead
+  Assert-SkillSource $managedRead
+  if ((Read-Git $previousRoot @('rev-parse', 'HEAD')) -ne $metadata.commit -or
       (Read-Git $previousRoot @('remote', 'get-url', 'origin')) -ne $Repository -or
       (Read-Git $previousRoot @('status', '--porcelain', '--', 'skill/SKILL.md'))) {
     throw "Existing Skill source identity changed; refusing replacement: $previousSource"
   }
-  if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($skillPath)) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($previousSource))) {
+  if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($skillPath)) -ne [Convert]::ToBase64String($previousRead.Bytes)) {
     throw "Manually edited Skill is preserved; refusing replacement: $skillPath"
   }
 }
 
+$sourceReads = [Collections.Generic.List[object]]::new()
+try {
 Assert-OrdinaryPath $source
 if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or [IO.Path]::GetFileName($source) -ne 'SKILL.md') {
   throw "Pinned runtime does not contain SKILL.md: $source"
 }
-$content = [IO.File]::ReadAllText($source)
+$sourceRead = Open-SkillSource $source
+$textReader = [IO.StreamReader]::new([IO.MemoryStream]::new([byte[]]$sourceRead.Bytes), [Text.Encoding]::UTF8, $true)
+try { $content = $textReader.ReadToEnd() } finally { $textReader.Dispose() }
 if ($content -notmatch '(?m)^name:\s+codex-with-chatgpt\s*$' -or $content -notmatch 'in-app browser|built-in in-app browser') {
   throw "Unexpected Codex-native Skill identity: $source"
 }
 Assert-ExistingSkill
+Assert-SkillSource $sourceRead
 if ((Test-Path -LiteralPath $metadataPath -PathType Leaf) -and (Test-Path -LiteralPath $skillPath -PathType Leaf)) {
   $installedMetadata = [IO.File]::ReadAllText($metadataPath) | ConvertFrom-Json
   if ($installedMetadata.repository -eq $Repository -and $installedMetadata.ref -eq $Ref -and $installedMetadata.commit -eq $Commit -and
       $installedMetadata.source -eq $source -and $installedMetadata.destination -eq $destination -and
-      [Convert]::ToBase64String([IO.File]::ReadAllBytes($skillPath)) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($source))) {
+      [Convert]::ToBase64String([IO.File]::ReadAllBytes($skillPath)) -eq [Convert]::ToBase64String($sourceRead.Bytes)) {
     if (-not $PassThru) { Write-Output "Codex-only C2C Skill already installed; files unchanged: $destination" }
     return
   }
@@ -228,7 +283,8 @@ $writtenFiles = @()
 $handoffFiles = $false
 try {
   Assert-ExistingSkill
-  $writtenFiles += Write-SkillFile $previousFiles[0] ([IO.File]::ReadAllBytes($source))
+  foreach ($read in $sourceReads) { Assert-SkillSource $read }
+  $writtenFiles += Write-SkillFile $previousFiles[0] $sourceRead.Bytes
   $writtenFiles += Write-SkillFile $previousFiles[1] ([Text.Encoding]::UTF8.GetBytes(($metadata | ConvertTo-Json)))
   $handoffFiles = [bool]$PassThru
 } catch {
@@ -246,3 +302,6 @@ try {
 }
 if ($PassThru) { $writtenFiles }
 else { Write-Output ("Installed Codex-only C2C Skill at {0}`nSource: {1}" -f $destination, $source) }
+} finally {
+  foreach ($read in $sourceReads) { $read.Stream.Dispose() }
+}
