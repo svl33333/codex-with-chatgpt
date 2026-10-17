@@ -12,8 +12,12 @@ into the TeamAI repository.
 - Integrated official baseline: `9663b88753e35c76796c5bce000293e0bd22cd9e`
 - Baseline version: `0.1.3`
 - Custom fork: <https://github.com/svl33333/codex-with-chatgpt>
-- Custom version: `0.1.3-svl.16`
-- Publication status: source candidate; no `.16` tag or release has been published.
+- Custom version: `0.1.3-svl.17`
+- Publication status: source candidate; no `.17` tag or release has been published.
+- Previous immutable tag: `v0.1.3-svl.16` at `9b80750bd55cd6f526b78c01dacab649ea04d9c4`.
+- AppData source correction: merged at `640901dd42b537c4388f66352613866fa6a6c85b`; included in this `.17` candidate.
+- Source development, source merge, tag publication, GitHub Release creation and
+  actual consumer adoption are separate stages.
 - License: MIT (retained from upstream)
 
 Keep `upstream` and `origin` separate. A future update first fetches and
@@ -113,8 +117,8 @@ JSON is prohibited. Until a trusted producer is demonstrated, the auto-confirm
 path fails closed at the service's normal consent UI. This source change does
 not establish release/adoption or production automatic-consent capability.
 
-The installed `.13` Runtime and the immutable `.14` tag are distinct from this
-`.15` source candidate. F09's production assurance gap remains open until the
+The historical `.13` Runtime and the immutable `.14`, `.15`, and `.16` tags
+are distinct from this `.17` source candidate. F09's production assurance gap remains open until the
 formal release/adoption and actual environment checks. Candidate regression
 coverage reuses `tests/oauth.test.ts` for resource binding, unsupported scopes,
 read-only grants, refresh rotation/replay and secret-free persistence;
@@ -138,7 +142,7 @@ provider grant.
 5. Run `scripts/update-custom-c2c.ps1 -Ref <tag>`; it builds a new version
    directory and advances the user-local manifest only after verification.
 
-`bootstrap-custom-c2c.ps1` defaults to `v0.1.3-svl.16`. The updater still reads
+`bootstrap-custom-c2c.ps1` defaults to `v0.1.3-svl.17`. The updater still reads
 `runtime.json`'s ref when `-Ref` is omitted. Both accept optional
 `-ExpectedCommit`, `-ExpectedVersion`, and `-ExpectedSkillSha256`; the latter
 retains TeamAI's UTF-8/LF-normalized Skill digest meaning. Expected identities
