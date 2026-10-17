@@ -45,6 +45,19 @@ source; a user chat acknowledgement is not.
 
 ## Safety invariants
 
+The Skill installer recognizes Windows AppData virtualization through the existing
+native volume/file identity and the normalized final name of the held source
+handles. Comparing path spelling rejects legitimate AppData/LocalCache aliases;
+using file ID alone would also admit unmanaged hardlink names. Both metadata and
+Git-derived source paths retain their reparse checks and all existing Git,
+metadata, raw-byte and manual-content checks. Candidate and old-source read
+handles stay open through installation/no-op and close on every exit, including
+PassThru. Unavailable identity/name queries refuse before activation. Protection
+starts at each first held read; it does not attest earlier filesystem history or
+close the existing parent-check-to-candidate-capture interval. This correction is
+unpublished source work on the `.16` baseline, not a change to its immutable tag
+or evidence of actual consumer recovery.
+
 1. A connector label never proves ownership. Match workspace, canonical
    repository, installation ID, endpoint mode, and endpoint fingerprint.
 2. A same-name foreign connector is a conflict and remains untouched.
