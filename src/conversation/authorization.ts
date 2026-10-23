@@ -4,7 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { getStateDir, readJsonIfExists, writeAtomicSecureJson } from "../config/paths.js";
 import { withLease } from "../config/lease.js";
 import { readStrictJsonFile } from "../config/strict-json.js";
-import { readWorktreeIdentity } from "../connection/identity.js";
+import { readWorktreeIdentity, readConnectionBinding } from "../connection/identity.js";
+import { readSession } from "../session/state.js";
+import { captureExecutionInputDigest, readExecutionRecords } from "../execution/records.js";
+import { readExecutionOutput } from "../execution/output.js";
+import { canonicalMessageType, parseCanonicalYaml, readCanonicalSelection, type CanonicalSelection } from "../runner/canonical.js";
 import {
   prepareGitHubOperation,
   reconcileGitHubOperation,
@@ -53,6 +57,7 @@ export type AuthRecoveryState =
   | "WAITING_HUMAN_SECURITY_BOUNDARY";
 
 export interface TransportBindingIdentity {
+  readonly [CANONICAL_28_CHECKOUT]?: string;
   workspaceId: string;
   workstreamId?: string;
   workspaceName?: string;
@@ -216,6 +221,7 @@ export interface WorkflowAuthorizationIssuer {
 
 const WORKFLOW_AUTHORITY: unique symbol = Symbol("canonical-workflow-authority");
 const ACTIVE_CANONICAL_BINDING: unique symbol = Symbol("active-canonical-workflow-binding");
+const CANONICAL_28_CHECKOUT: unique symbol = Symbol("canonical-28-checkout");
 
 export interface WorkflowAuthorizationIssuerInput {
   workflowStep: number;
@@ -286,7 +292,7 @@ export interface ReviewerResponseInput {
 export const DELIVERY_RECEIPT_TRANSITIONS: Readonly<
   Record<DeliveryReceiptState, readonly DeliveryReceiptState[]>
 > = {
-  PREPARED: ["SENDING", "BLOCKED"],
+  PREPARED: ["SENDING", "RECONCILING", "BLOCKED"],
   SENDING: ["DELIVERED_VISIBLE", "WAITING_RESPONSE", "RECONCILING", "FAILED_DEFINITE", "AMBIGUOUS", "BLOCKED"],
   DELIVERED_VISIBLE: ["WAITING_RESPONSE", "RESPONSE_RECEIVED", "RECONCILING", "BLOCKED"],
   WAITING_RESPONSE: ["DELIVERED_VISIBLE", "RESPONSE_RECEIVED", "RECONCILING", "BLOCKED"],
@@ -613,8 +619,14 @@ function canonicalActionId(workspaceId: string, workstreamId: string, checkpoint
   return `c2c-action-${createHash("sha256").update(`${workspaceId}\0${workstreamId}\0${checkpoint}\0${messageType}`).digest("hex").slice(0, 32)}`;
 }
 
-function canonicalWorkflowSnapshot(file: string): CanonicalWorkflowSnapshot {
+function canonicalWorkflowSnapshot(file: string, binding?: TransportBindingIdentity): CanonicalWorkflowSnapshot {
   const state = fs.readFileSync(file, "utf8");
+  const declaredVersion = parseCanonicalYaml(state).workflow?.spec_version;
+  if (declaredVersion && !/^2\.[2-7]\.\d+$/.test(String(declaredVersion)) && declaredVersion !== "2.8.0") throw new Error("unsupported canonical workflow version");
+  if (declaredVersion === "2.8.0" || binding?.[CANONICAL_28_CHECKOUT]) {
+    if (!binding?.[CANONICAL_28_CHECKOUT]) throw new Error("canonical2.8 requires the resolved owner context");
+    return canonical28Snapshot(readCanonicalSelection({ workspaceRoot: binding.workspaceRoot!, workstream: path.basename(path.dirname(file)), workflowCheckout: binding[CANONICAL_28_CHECKOUT] }));
+  }
   const workstreamId = path.basename(path.dirname(file));
   const step = Number(yamlScalar(state, "step"));
   const stage = yamlScalar(state, "stage");
@@ -684,6 +696,43 @@ function canonicalWorkflowSnapshot(file: string): CanonicalWorkflowSnapshot {
 }
 
 const CANONICAL_BINDING_FIELDS: readonly string[] = IMMUTABLE_BINDING_FIELDS;
+
+function canonical28Snapshot(selection: CanonicalSelection): CanonicalWorkflowSnapshot {
+  const { state, root, workstream, workspaceId } = selection;
+  const messageType = canonicalMessageType(selection);
+  const connection = readConnectionBinding(workspaceId);
+  const session = readSession(workspaceId);
+  const transport = session?.transport;
+  const active = readWorktreeIdentity({ workspaceRoot: root });
+  const checkpoint = state.c2c.checkpoint as string;
+  if (!connection || !session || !transport || connection.workspace !== root && connection.workspace !== path.basename(root) || connection.canonicalRepository !== selection.repository || connection.installationId !== active.installationId || transport.workspaceId !== workspaceId || transport.workspaceRoot !== root || transport.repository !== selection.repository || transport.worktreeRoot !== root || transport.branch !== selection.branch || transport.checkpoint !== checkpoint || transport.stage !== state.workflow.stage) throw new Error("actual canonical2.8 private binding is missing or mismatched");
+  for (const field of ["mcpAppId", "mcpVersionId", "projectId", "chatId", "codexSessionId"] as const) {
+    if (!transport[field] || typeof transport[field] !== "string") throw new Error("actual canonical2.8 reviewer binding incomplete");
+  }
+  if (connection.connectorName !== transport.connectorName || connection.projectId !== transport.projectId || projectOrChatId(session.projectUrl, "project") !== transport.projectId || projectOrChatId(session.url, "chat") !== transport.chatId) throw new Error("actual canonical2.8 reviewer session mismatch");
+  if (state.workflow.step === 5 && !readExecutionRecords(workspaceId, 40).some(record => {
+    const mapped = record.canonicalReview;
+    if (record.taskId !== session.taskId || record.iteration !== session.iteration || !["0", "ok"].includes(record.exitStatus) || !record.tests || !record.outputAvailable || !record.outputId || !mapped || mapped.workstream !== workstream || mapped.workflowCommit !== selection.pin || mapped.checkpoint !== checkpoint || mapped.reviewStage !== state.c2c.review_stage || mapped.cycle !== state.c2c.cycle || mapped.inputDigest !== captureExecutionInputDigest(root)) return false;
+    const output = readExecutionOutput(workspaceId, record.outputId);
+    return output.ok && output.meta.taskId === session.taskId && output.meta.iteration === session.iteration && output.meta.exitCode === 0 && !output.meta.truncated && !!output.text;
+  })) throw new Error("owning execution/test evidence unavailable");
+  const eventKey = createHash("sha256").update([workspaceId, workstream, selection.pin, state.workflow.step, checkpoint, state.c2c.review_stage, state.c2c.cycle, messageType].join("\0")).digest("hex").slice(0, 32);
+  const actionId = `c2c-action-${eventKey}`;
+  for (const record of [state.c2c, state.runner_preflight ?? {}]) {
+    for (const [key, expected] of Object.entries({ authorized_action: messageType, event_key: eventKey, action_id: actionId, task_id: checkpoint })) {
+      if (record[key] !== undefined && record[key] !== expected) throw new Error("conflicting legacy canonical action metadata");
+    }
+  }
+  return { step: state.workflow.step, stage: state.workflow.stage, status: state.workflow.status, step4Approved: state.workflow.step4_approval?.approved === true, workspaceId, workspaceRoot: root, workspaceName: path.basename(root), canonicalRepository: selection.repository, worktreeRoot: root, branch: selection.branch, observedCommit: active.observedCommit, dirtyState: active.dirtyState, installationId: active.installationId, endpointFingerprint: connection.endpointFingerprint, connectorName: connection.connectorName, mcpAppId: transport.mcpAppId!, mcpVersionId: transport.mcpVersionId!, projectId: transport.projectId!, chatId: transport.chatId!, codexSessionId: transport.codexSessionId!, taskId: checkpoint, checkpoint, reviewStage: state.c2c.review_stage, eventKey, actionId, authorizedMessageType: messageType };
+}
+
+export function deriveCanonical28Binding(input: { workspaceRoot: string; workstream: string; workflowCheckout: string }): TransportBindingIdentity {
+  const selection = readCanonicalSelection(input);
+  const snapshot = canonical28Snapshot(selection);
+  const resolved: TransportBindingIdentity = { ...snapshot, workstreamId: selection.workstream, [ACTIVE_CANONICAL_BINDING]: true, [CANONICAL_28_CHECKOUT]: selection.workflowCheckout };
+  assertCanonicalBindingAgainstSnapshot(resolved, snapshot);
+  return resolved;
+}
 
 function bindingDigest(binding: TransportBindingIdentity): string {
   const projection = Object.fromEntries(CANONICAL_BINDING_FIELDS.map((field) => [field, binding[field as keyof TransportBindingIdentity] ?? null]));
@@ -759,6 +808,11 @@ export interface ActiveCanonicalWorkflowBindingInput {
  * different workspace, workstream, checkpoint, or workflow stage.
  */
 export function deriveActiveCanonicalBinding(input: ActiveCanonicalWorkflowBindingInput): TransportBindingIdentity {
+  if (input.candidate[CANONICAL_28_CHECKOUT]) {
+    const resolved = deriveCanonical28Binding({ workspaceRoot: input.workspaceRoot, workstream: input.candidate.workstreamId!, workflowCheckout: input.candidate[CANONICAL_28_CHECKOUT]! });
+    if (resolved.workspaceId !== input.workspaceId || !bindingMatches(input.candidate, resolved)) throw new Error("canonical2.8 binding mismatch");
+    return resolved;
+  }
   const root = fs.realpathSync.native(path.resolve(input.workspaceRoot));
   const harnessRoot = path.join(root, ".harness");
   if (!fs.existsSync(harnessRoot)) throw new Error("active workspace has no canonical .harness state");
@@ -837,7 +891,7 @@ export function createWorkflowAuthorizationIssuer(input: WorkflowAuthorizationIs
   assertMessageType(input.messageType);
   const workflowStatePath = canonicalWorkflowStatePath(input.binding);
   if (!fs.existsSync(workflowStatePath)) throw new Error("canonical workflow state is unavailable");
-  const snapshot = canonicalWorkflowSnapshot(workflowStatePath);
+  const snapshot = canonicalWorkflowSnapshot(workflowStatePath, input.binding);
   assertCanonicalBindingAgainstSnapshot(input.binding, snapshot);
   if (snapshot.step !== input.workflowStep || snapshot.stage !== input.stage) throw new Error("canonical workflow step or stage does not match");
   if (snapshot.status !== "RUNNING") throw new Error("canonical workflow is not running");
@@ -878,7 +932,7 @@ function verifyWorkflowAuthorizationIssuer(issuer: WorkflowAuthorizationIssuer, 
   if (!fs.existsSync(issuer.workflowStatePath) || workflowStateDigest(issuer.workflowStatePath) !== issuer.workflowStateDigest) {
     throw new Error("canonical workflow state changed or is unavailable");
   }
-  const snapshot = canonicalWorkflowSnapshot(issuer.workflowStatePath);
+  const snapshot = canonicalWorkflowSnapshot(issuer.workflowStatePath, binding);
   assertCanonicalBindingAgainstSnapshot(binding, snapshot);
   if (
     snapshot.step !== issuer.workflowStep ||
@@ -1119,6 +1173,7 @@ export function markSending(
   processId?: string,
   sessionId?: string
 ): C2cDeliveryReceipt {
+  if (binding[CANONICAL_28_CHECKOUT] && canonicalWorkflowSnapshot(canonicalWorkflowStatePath(binding), binding).status !== "RUNNING") throw new Error("canonical waiting state cannot issue transport");
   return withEventLease(authorization.eventKey, () => {
     const receipt = loadReceipt(authorization.eventKey);
     if (!receipt) throw new Error("delivery receipt is not prepared");
@@ -1184,6 +1239,7 @@ export function reconcileDelivery(input: ReconcileDeliveryInput): C2cDeliveryRec
     const receipt = loadReceipt(input.authorization.eventKey);
     if (!receipt) throw new Error("delivery receipt is not prepared");
     assertEventIdentity(input.authorization, input.binding, receipt.messageType, receipt.eventKey, receipt.payloadHash);
+    if (input.binding[CANONICAL_28_CHECKOUT] && receipt.state === "PREPARED") transitionReceipt(receipt, "RECONCILING", "owner recovery of a prepared receipt");
     receipt.reconciliationAttempts += 1;
     let outcome = input.outcome;
     let reconciliationReason = input.reason;
