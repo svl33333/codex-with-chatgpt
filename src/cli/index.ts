@@ -1,4 +1,5 @@
 import { Command, InvalidArgumentError } from "commander";
+import { runHeadless, type RunnerAction } from "../runner/headless.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -63,7 +64,7 @@ import {
   type ProtocolState,
   type WaitingFor,
 } from "../session/state.js";
-import { appendExecutionRecord } from "../execution/records.js";
+import { appendExecutionRecord, bindExecutionToCanonicalReview } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import {
   deriveActiveCanonicalBinding,
@@ -2265,6 +2266,9 @@ program
   .option("--output <text>", "command output (prefer --output-file for long logs)")
   .option("--output-file <path>", "read command output from a local file")
   .option("--exit-code <n>", "numeric exit code of that command", parseInteger)
+  .option("--workstream <slug>", "canonical2.8 review associated with this existing record")
+  .option("--workflow-root <path>", "existing resolver-validated Workflow checkout")
+  .option("--input-digest <sha256>", "input digest captured by the owner before executing the command")
   .action(
     (opts: {
       workspace?: string;
@@ -2278,9 +2282,15 @@ program
       output?: string;
       outputFile?: string;
       exitCode?: number;
+      workstream?: string;
+      workflowRoot?: string;
+      inputDigest?: string;
     }) => {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
       const changed = parseChangedFiles(opts.changedFiles);
+      const hasCanonicalInputs = opts.workstream !== undefined || opts.workflowRoot !== undefined || opts.inputDigest !== undefined;
+      if (hasCanonicalInputs && (!opts.workstream || !opts.workflowRoot || !opts.inputDigest)) throw new Error("canonical execution recording requires workstream, workflow root and before-input digest");
+      const canonicalReview = hasCanonicalInputs ? bindExecutionToCanonicalReview({ workspaceRoot: workspace.root, workstream: opts.workstream!, workflowCheckout: opts.workflowRoot!, beforeInputDigest: opts.inputDigest! }) : undefined;
       let outputId: number | undefined;
       let outputAvailable = false;
       const rawOutput =
@@ -2308,6 +2318,7 @@ program
         notes: opts.notes?.slice(0, 400),
         outputId,
         outputAvailable,
+        canonicalReview,
       });
       if (outputId !== undefined && !outputAvailable) check("実行サマリーを記録しました（出力はChatGPTに公開していません）");
       else if (outputId !== undefined) check("実行サマリーと出力を記録しました");
@@ -2463,6 +2474,21 @@ function handleCliError(error: unknown, json: boolean): void {
   }
   process.exitCode = 1;
 }
+
+program.command("runner").description("Opt-in partial A2 foundation").command("run")
+  .requiredOption("-w, --workspace <path>")
+  .requiredOption("--workstream <slug>")
+  .requiredOption("--goal <path>")
+  .requiredOption("--workflow-root <path>", "existing resolver-validated published checkout")
+  .option("--request-file <path>", "typed private A1 request; never execution authority")
+  .action(async (opts: { workspace: string; workstream: string; goal: string; workflowRoot: string; requestFile?: string }) => {
+    try {
+      const action = opts.requestFile ? parseStrictJson<RunnerAction>(readCappedUtf8(path.resolve(opts.requestFile), 32 * 1024)) : undefined;
+      const outcome = await runHeadless({ workspaceRoot: opts.workspace, workstream: opts.workstream, goalPath: opts.goal, workflowCheckout: opts.workflowRoot, action,
+      });
+      say(JSON.stringify(outcome));
+    } catch { say(JSON.stringify({ outcome: "CAPABILITY_BLOCKED", reason: "INVALID_OR_UNAVAILABLE_CONTEXT", iteration: 0, executed: false })); }
+  });
 
 program.parseAsync(process.argv).catch((error: Error) => {
   cross(error.message);
