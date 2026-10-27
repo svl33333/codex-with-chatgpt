@@ -17,7 +17,7 @@ import { namedTunnelBinding, readTunnelState } from "../tunnel/state.js";
 import { Logger, nullLogger } from "../logger/index.js";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
-import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
+import { writeRuntimeState, clearRuntimeState, RESTART_PROTOCOL, type RuntimeState } from "./runtime.js";
 
 function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
@@ -44,6 +44,8 @@ export interface BridgeOptions {
   accessTokenTtlMs?: number;
   connectorBinding?: { connectorId: string; installationId: string };
   pairingStrategy?: PairingStrategy;
+  restartCandidate?: boolean;
+  onShutdown?: () => void;
 }
 
 export interface Bridge {
@@ -122,6 +124,9 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
   let pendingPairingBinding: PairingRequestBinding | null = null;
+  let authorizationPaused = opts.restartCandidate ?? false;
+  let shutdownPending = false;
+  let hasPendingAuthorizationRequest = (): boolean => false;
 
   let publicBaseUrl: string | null = null;
 
@@ -161,6 +166,8 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       canonicalBaseUrl: () => publicBaseUrl,
       connectorBinding: opts.connectorBinding,
       pairingHandoff,
+      canBeginAuthorization: () => !authorizationPaused,
+      observePendingAuthorization: (probe) => { hasPendingAuthorizationRequest = probe; },
       onPendingPairingBinding: (binding) => { pendingPairingBinding = binding; },
       onPairingCompleted: (binding) => {
         if (pendingPairingBinding?.requestId === binding.requestId) pendingPairingBinding = null;
@@ -198,6 +205,10 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   };
 
   app.post("/admin/pairing", adminGuard, express.json({ limit: "32kb" }), (req, res) => {
+    if (authorizationPaused) {
+      res.status(503).json({ error: "temporarily_unavailable" });
+      return;
+    }
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : undefined;
     const candidate = body && Object.keys(body).length > 0 ? body.binding ?? body : undefined;
     const binding = candidate && isPairingRequestBinding(candidate)
@@ -249,6 +260,8 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       tunnel: tunnel.status(),
       tokenCount: authStore.tokenCount(),
       pairingActive: pairing.hasActiveSession(),
+      restartProtocol: RESTART_PROTOCOL,
+      authorizationPaused,
       pairingStrategy,
       pid: process.pid,
       startedAt,
@@ -274,6 +287,9 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       publicBaseUrl = null;
       persistRuntime();
       res.json({ stopped: true });
+    }).catch(() => {
+      logger.error("Tunnel stop failed");
+      res.status(500).json({ error: "tunnel_stop_failed", message: "Tunnel stop failed" });
     });
   });
 
@@ -284,10 +300,41 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     res.json({ revoked: count });
   });
 
-  app.post("/admin/shutdown", adminGuard, (_req, res) => {
+  app.post("/admin/restart/complete", adminGuard, (_req, res) => {
+    if (!opts.restartCandidate || shutdownPending) {
+      res.status(409).json({ error: "restart_not_pending" });
+      return;
+    }
+    authorizationPaused = false;
+    res.json({ ready: true });
+  });
+
+  app.post("/admin/shutdown", adminGuard, (req, res) => {
+    if (req.query.mode !== undefined && req.query.mode !== "restart") {
+      res.status(400).json({ error: "unsupported_shutdown_mode" });
+      return;
+    }
+    if (shutdownPending) {
+      res.status(409).json({ error: "shutdown_pending" });
+      return;
+    }
+    const previouslyPaused = authorizationPaused;
+    if (req.query.mode === "restart") {
+      authorizationPaused = true;
+      if (pairing.hasActiveSession() || hasPendingAuthorizationRequest() || authStore.hasPendingAuthorizationCode()) {
+        authorizationPaused = previouslyPaused;
+        res.status(409).json({ error: "authorization_in_progress" });
+        return;
+      }
+    }
+    shutdownPending = true;
     res.json({ shuttingDown: true });
     setTimeout(() => {
-      void shutdown().then(() => process.exit(0));
+      void shutdown().then(() => (opts.onShutdown ?? (() => process.exit(0)))()).catch(() => {
+        authorizationPaused = previouslyPaused;
+        shutdownPending = false;
+        logger.error("Bridge shutdown failed");
+      });
     }, 100);
   });
 
@@ -313,13 +360,18 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   persistRuntime();
 
   let closed = false;
-  const shutdown = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    await tunnel.stop().catch(() => undefined);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (opts.persistRuntime !== false) clearRuntimeState(workspace.id);
-    logger.info("Bridge stopped");
+  let closing: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => {
+    if (closed) return Promise.resolve();
+    if (closing) return closing;
+    closing = (async () => {
+      await tunnel.stop();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      if (opts.persistRuntime !== false) clearRuntimeState(workspace.id);
+      closed = true;
+      logger.info("Bridge stopped");
+    })().finally(() => { closing = null; });
+    return closing;
   };
 
   return {

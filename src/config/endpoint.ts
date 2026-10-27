@@ -2,6 +2,7 @@ import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "./paths.js";
 import { connectorNameForInstallation, endpointFingerprint, type EndpointMode } from "../connection/identity.js";
 import { createHash } from "node:crypto";
+import { withWorkspaceOperation } from "../process/workspace-operation.js";
 
 export const CHATGPT_DEVELOPER_MODE_URL = "https://chatgpt.com/#settings/Security";
 export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
@@ -130,9 +131,11 @@ export function readLastEndpoint(workspaceId: string): LastEndpoint | null {
 }
 
 export function writeLastEndpoint(endpoint: Omit<LastEndpoint, "savedAt">): LastEndpoint {
-  const saved: LastEndpoint = { ...endpoint, savedAt: new Date().toISOString() };
-  writeSecureJson(endpointFile(saved.workspaceId), saved);
-  return saved;
+  return withWorkspaceOperation(endpoint.workspaceId, () => {
+    const saved: LastEndpoint = { ...endpoint, savedAt: new Date().toISOString() };
+    writeSecureJson(endpointFile(saved.workspaceId), saved);
+    return saved;
+  });
 }
 
 export function normalizePublicUrl(url: string): string {

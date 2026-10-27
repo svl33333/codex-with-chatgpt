@@ -27,7 +27,10 @@ import {
   validateSetupTunnelFlag,
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
-import { getStateDir } from "../config/paths.js";
+import { getStateDir, writeSecureFile } from "../config/paths.js";
+import { withWorkspaceOperation } from "../process/workspace-operation.js";
+import { restartWorkspace } from "../connection/restart.js";
+import { CloudflaredNamedTunnel } from "../tunnel/cloudflared-named.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import {
   mergeUiPrefs,
@@ -49,6 +52,7 @@ import {
   normalizePublicUrl,
   projectDisplayNameForWorkspace,
   readLastEndpoint,
+  endpointFile,
   reclaimUserMessage,
   writeLastEndpoint,
   type LastEndpoint,
@@ -75,6 +79,7 @@ import {
   getInstallationIdentity,
   makeConnectionBinding,
   readConnectionBinding,
+  readInstallationIdentity,
   writeConnectionBinding,
   type EndpointMode,
 } from "../connection/identity.js";
@@ -119,6 +124,10 @@ const cross = (msg: string): void => say(`✗ ${msg}`);
 
 function resolveWorkspace(option?: string): string {
   return path.resolve(option ?? process.cwd());
+}
+
+function workspaceAction<T extends { workspace?: string }>(action: (opts: T) => Promise<void>) {
+  return (opts: T) => withWorkspaceOperation(new Workspace(resolveWorkspace(opts.workspace)).id, () => action(opts));
 }
 
 /** Resolve the exact connector/installation identity before minting pairing. */
@@ -234,19 +243,47 @@ function persistWorkspaceEndpoint(opts: {
   previous?: LastEndpoint | null;
 }): string {
   const previous = opts.previous ?? readLastEndpoint(opts.workspaceId);
-  const installation = getInstallationIdentity();
-  const endpointMode = opts.endpointMode ?? "ephemeral";
+  const existing = readConnectionBinding(opts.workspaceId);
+  const installation = existing ? readInstallationIdentity() : getInstallationIdentity();
+  if (!installation || (existing && existing.installationId !== installation.installationId)) {
+    throw new Error("CONNECTION_INSTALLATION_MISMATCH");
+  }
+  const endpointMode = opts.endpointMode ?? existing?.endpointMode ?? previous?.endpointMode ?? "ephemeral";
+  if (!["stable", "ephemeral", "local"].includes(endpointMode) ||
+      (existing && previous?.endpointMode && existing.endpointMode !== previous.endpointMode)) {
+    throw new Error("CONNECTION_MODE_MISMATCH");
+  }
+  const repository = canonicalRepositoryFor(opts.workspaceRoot);
+  if (existing && (existing.workspaceId !== opts.workspaceId || existing.workspace !== opts.workspaceName ||
+      existing.canonicalRepository !== repository)) throw new Error("CONNECTION_BINDING_MISMATCH");
+  if (existing && previous) {
+    for (const field of ["workspace", "canonicalRepository", "installationId", "connectorName", "endpointMode", "endpointFingerprint"] as const) {
+      if (previous[field] !== undefined && previous[field] !== existing[field]) {
+        throw new Error("CONNECTION_BINDING_MISMATCH");
+      }
+    }
+    if (previous.mcpUrl && existing.endpointFingerprint !== endpointFingerprint(previous.mcpUrl, existing.endpointMode)) {
+      throw new Error("CONNECTION_BINDING_MISMATCH");
+    }
+  }
   const connectorName = connectorNameFor({
     workspaceName: opts.workspaceName,
     workspaceId: opts.workspaceId,
-    previousName: previous?.connectorName,
+    previousName: existing?.connectorName ?? previous?.connectorName,
     hadEndpointBefore: Boolean(previous),
     installationId: installation.installationId,
   });
-  writeLastEndpoint({
+  const nextBinding = makeConnectionBinding({
+    workspaceId: opts.workspaceId, workspace: opts.workspaceName, workspaceRoot: opts.workspaceRoot,
+    endpoint: opts.mcpUrl, endpointMode, connectorName,
+  });
+  const file = endpointFile(opts.workspaceId);
+  const before = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  const saved = writeLastEndpoint({
+    ...previous,
     workspaceId: opts.workspaceId,
     workspace: opts.workspaceName,
-    canonicalRepository: canonicalRepositoryFor(opts.workspaceRoot),
+    canonicalRepository: repository,
     installationId: installation.installationId,
     endpointMode,
     endpointFingerprint: endpointFingerprint(opts.mcpUrl, endpointMode),
@@ -255,16 +292,15 @@ function persistWorkspaceEndpoint(opts: {
     mcpUrl: opts.mcpUrl,
     connectorName,
   });
-  writeConnectionBinding(
-    makeConnectionBinding({
-      workspaceId: opts.workspaceId,
-      workspace: opts.workspaceName,
-      workspaceRoot: opts.workspaceRoot,
-      endpoint: opts.mcpUrl,
-      endpointMode,
-      connectorName,
-    })
-  );
+  try {
+    writeConnectionBinding(nextBinding);
+  } catch (error) {
+    if (fs.readFileSync(file).equals(Buffer.from(JSON.stringify(saved, null, 2)))) {
+      if (before) writeSecureFile(file, before);
+      else fs.unlinkSync(file);
+    }
+    throw error;
+  }
   return connectorName;
 }
 
@@ -426,10 +462,17 @@ program
   .description("Run the bridge in the foreground (internal)")
   .requiredOption("--workspace <path>")
   .option("--port <port>", "preferred port")
-  .action(async (opts: { workspace: string; port?: string }) => {
+  .option("--restart-candidate", "hold new authorization until restart commit", false)
+  .option("--restart-tunnel-id <id>")
+  .option("--restart-tunnel-name <name>")
+  .option("--restart-hostname <hostname>")
+  .action(async (opts: { workspace: string; port?: string; restartCandidate: boolean; restartTunnelId?: string; restartTunnelName?: string; restartHostname?: string }) => {
     const logger = new Logger({ name: "bridge", console: true });
     const root = resolveWorkspace(opts.workspace);
     const workspace = new Workspace(root);
+    if (opts.restartCandidate && (!opts.restartTunnelId || !opts.restartTunnelName || !opts.restartHostname)) {
+      throw new Error("RESTART_NAMED_REUSE_UNAVAILABLE");
+    }
     const prefs = readUiPrefs();
     const provisioningState = readProvisioningState(workspace.id);
     const pairingSelection = selectPairingStrategy({
@@ -444,9 +487,13 @@ program
       logger,
       connectorBinding: connectorBindingForWorkspace(root),
       pairingStrategy: pairingSelection.strategy,
+      restartCandidate: opts.restartCandidate,
+      ...(opts.restartCandidate ? { tunnelProvider: new CloudflaredNamedTunnel({
+        tunnelName: opts.restartTunnelName!, tunnelId: opts.restartTunnelId!, hostname: opts.restartHostname!, logger,
+      }) } : {}),
     });
     const shutdown = (): void => {
-      void bridge.close().then(() => process.exit(0));
+      void bridge.close().then(() => process.exit(0)).catch(() => logger.error("Bridge shutdown failed"));
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
@@ -461,7 +508,7 @@ program
   .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
   .option("--tunnel", "also establish the secure public connection", false)
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
+  .action(workspaceAction(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
@@ -485,7 +532,7 @@ program
     } catch (error) {
       handleCliError(error, opts.json);
     }
-  });
+  }));
 
 // ---------------------------------------------------------------- setup
 
@@ -495,7 +542,7 @@ program
   .option("-w, --workspace <path>")
   .option("--no-tunnel", "local-only setup (development)")
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
+  .action(workspaceAction(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
       if (!opts.json) {
@@ -572,7 +619,7 @@ program
     } catch (error) {
       handleCliError(error, opts.json);
     }
-  });
+  }));
 
 // ---------------------------------------------------------------- stop / restart
 
@@ -588,19 +635,17 @@ program
 
 program
   .command("restart")
-  .description("Restart the bridge for this workspace")
+  .description("Restart an existing named connection without changing its identity")
   .option("-w, --workspace <path>")
-  .option("--tunnel", "re-establish the secure public connection", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean }) => {
-    const root = resolveWorkspace(opts.workspace);
-    await stopBridge(root);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  .option("--tunnel", "compatibility flag; restart reuses the existing named connection", false)
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
     try {
-      const { info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
-      check(`Bridge を再起動しました（${info.workspaceName}）`);
-      if (mcpUrl) check(`安全な接続を確立しました`);
+      const restarted = await restartWorkspace(resolveWorkspace(opts.workspace));
+      if (opts.json) say(JSON.stringify(restarted));
+      else check("既存接続のidentityを保持して再起動しました");
     } catch (error) {
-      handleCliError(error, false);
+      handleCliError(error, opts.json);
     }
   });
 
@@ -653,7 +698,7 @@ program
   .option("-w, --workspace <path>")
   .option("--no-fix", "diagnose only, do not repair")
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; fix: boolean; json: boolean }) => {
+  .action(workspaceAction(async (opts: { workspace?: string; fix: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     const report: Record<string, { ok: boolean; detail?: string }> = {};
     const results: string[] = [];
@@ -982,7 +1027,7 @@ program
             : "問題が残っています。`c2c restart --tunnel` を試してください。"
     );
     if (!allOk || namedRepair.needed) process.exitCode = 1;
-  });
+  }));
 
 // ---------------------------------------------------------------- pair / unpair
 
@@ -2055,7 +2100,7 @@ tunnelCmd
   .option("--zone <domain>", "Cloudflare domain for a named hostname")
   .option("--hostname <hostname>", "override the default c2c-<project>.<zone>")
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { mode: string; workspace?: string; zone?: string; hostname?: string; json: boolean }) => {
+  .action(workspaceAction(async (opts: { mode: string; workspace?: string; zone?: string; hostname?: string; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
       const workspace = new Workspace(root);
@@ -2125,7 +2170,7 @@ tunnelCmd
     } catch (error) {
       handleCliError(error, opts.json);
     }
-  });
+  }));
 
 acceptUnusedWorkspaceOption(
   tunnelCmd

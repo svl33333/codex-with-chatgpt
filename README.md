@@ -145,6 +145,30 @@ address — same features, just a slower repair.
 
 Credentials stay in the OS app state directory, not in the project.
 
+### Restart an existing named connection
+
+`c2c restart --workspace <root> --json` reuses a verified named Tunnel UUID
+without provisioning a Tunnel or changing DNS. It preserves the saved endpoint
+mode, fingerprint, repository, installation and connector identity, as well as
+OAuth registrations and grants. Detached HEAD is supported for this operation
+only when the Git root, full commit and unambiguous GitHub remote agree with
+the saved binding. The shared review evidence resolver remains strict.
+
+Restart refuses contradictory or missing metadata, active pairing or pending
+OAuth authorization, and concurrent lifecycle changes to the same workspace.
+It waits for the owned Tunnel child and bridge process to exit before starting
+an authorization-paused candidate. Authorization resumes after the existing
+endpoint is verified and its local port is saved. A failed candidate retains
+the binding; an incomplete cleanup is reported explicitly.
+
+Both bridge and CLI must support restart protocol 1. An older bridge, including
+v0.1.3-svl.17, is refused before shutdown. Its first production transition needs
+a separately reviewed deployment procedure and applicable authorization; a
+source update or PR merge alone does not authorize that transition. Quick
+Tunnels continue to use the ordinary connection flow and cannot use this
+identity-preserving restart command. The legacy `--tunnel` restart flag remains
+accepted for command compatibility.
+
 ## How it works
 
 ```
