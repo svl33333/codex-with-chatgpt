@@ -17,6 +17,8 @@ export interface OAuthDeps {
   pairingHandoff?: EphemeralPairingHandoff;
   onPendingPairingBinding?: (binding: PairingRequestBinding) => void;
   onPairingCompleted?: (binding: PairingRequestBinding) => void;
+  canBeginAuthorization?: () => boolean;
+  observePendingAuthorization?: (probe: () => boolean) => void;
   logger: Logger;
 }
 
@@ -177,6 +179,14 @@ function pairingPage(opts: {
 export function createOAuthRouter(deps: OAuthDeps): Router {
   const router = Router();
   const pendingRequests = new Map<string, PendingAuthRequest>();
+  deps.observePendingAuthorization?.(() =>
+    [...pendingRequests.values()].some((request) => Date.now() <= request.expiresAt)
+  );
+  const authorizationAvailable = (res: Response): boolean => {
+    if (deps.canBeginAuthorization?.() !== false) return true;
+    res.status(503).json({ error: "temporarily_unavailable" });
+    return false;
+  };
 
   const prunePending = (): void => {
     const now = Date.now();
@@ -202,6 +212,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
   // ---- Dynamic Client Registration (RFC 7591) ------------------------------
 
   router.post("/oauth/register", json(), (req, res) => {
+    if (!authorizationAvailable(res)) return;
     const body = req.body as { client_name?: string; redirect_uris?: unknown };
     const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
     if (
@@ -232,6 +243,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
   // ---- Authorization endpoint ----------------------------------------------
 
   router.get("/oauth/authorize", (req, res) => {
+    if (!authorizationAvailable(res)) return;
     prunePending();
     const query = req.query as Record<string, string | undefined>;
     const client = query.client_id ? deps.store.getClient(query.client_id) : undefined;
@@ -295,6 +307,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
   });
 
   router.post("/oauth/authorize", urlencoded({ extended: false }), (req, res) => {
+    if (!authorizationAvailable(res)) return;
     prunePending();
     const body = req.body as { request_id?: string; pairing_code?: string };
     const request = body.request_id ? pendingRequests.get(body.request_id) : undefined;

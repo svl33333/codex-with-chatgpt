@@ -96,3 +96,31 @@ export function resolveWorkspaceRepository(root: string): WorkspaceRepository | 
     rootIdentity: createHash("sha256").update(identity.root + "\0" + identity.gitIdentity).digest("hex"),
   };
 }
+
+export function resolveRestartRepository(root: string, expectedRepository: string) {
+  const identity = observeGitRoot(root, { allowSubtree: true });
+  if (readEvidenceGit(root, ["cat-file", "-t", identity.head], 1024).trim() !== "commit") {
+    throw new EvidenceError("RESTART_HEAD_UNAVAILABLE");
+  }
+  const expected = parseGitHubRepository(expectedRepository).repository;
+  const symbolic = runEvidenceGit(root, ["symbolic-ref", "--quiet", "HEAD"], 4096);
+  let repository: string;
+  let remote: string;
+  let branch: string | null = null;
+  if (symbolic.code === 0) {
+    const selected = resolveWorkspaceRepository(root);
+    if (!("remote" in selected)) throw new EvidenceError("RESTART_REPOSITORY_UNAVAILABLE");
+    ({ repository, remote, branch } = selected);
+  } else if (symbolic.code === 1) {
+    const remotes = readEvidenceGit(root, ["remote"], 16 * 1024).trim().split("\n").filter(Boolean);
+    if (remotes.length !== 1 || !safeConfigName(remotes[0])) throw new EvidenceError("AMBIGUOUS_REPOSITORY_REMOTE");
+    remote = remotes[0];
+    const url = readOptionalConfig(root, "remote." + remote + ".url");
+    if (!url) throw new EvidenceError("RESTART_REPOSITORY_UNAVAILABLE");
+    repository = parseGitHubRepository(url).repository;
+  } else {
+    throw new EvidenceError("RESTART_REPOSITORY_UNAVAILABLE");
+  }
+  if (repository !== expected) throw new EvidenceError("RESTART_REPOSITORY_MISMATCH");
+  return { identity, repository, remote, branch };
+}

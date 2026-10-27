@@ -1,6 +1,7 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import type { TunnelMode, UiPrefsView } from "../config/ui-prefs.js";
+import { withWorkspaceOperation } from "../process/workspace-operation.js";
 
 export type TunnelPreference = "unset" | "quick" | "named";
 export type TunnelSelectionSource = "workspace" | "machine" | "teamai" | "interactive" | "fallback";
@@ -54,8 +55,10 @@ export function readTunnelState(workspaceId: string): TunnelState {
 }
 
 export function writeTunnelState(state: TunnelState): TunnelState {
-  writeSecureJson(tunnelStateFile(state.workspaceId), state);
-  return state;
+  return withWorkspaceOperation(state.workspaceId, () => {
+    writeSecureJson(tunnelStateFile(state.workspaceId), state);
+    return state;
+  });
 }
 
 export function needsTunnelChoice(state: TunnelState): boolean {

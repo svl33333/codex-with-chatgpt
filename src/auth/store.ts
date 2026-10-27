@@ -154,6 +154,10 @@ export class AuthStore {
     return code;
   }
 
+  hasPendingAuthorizationCode(): boolean {
+    return [...this.authCodes.values()].some((record) => Date.now() <= record.expiresAt);
+  }
+
   /** One-time consumption of an authorization code. */
   consumeAuthorizationCode(code: string): AuthorizationCodeRecord | null {
     const record = this.authCodes.get(code);

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import readline from "node:readline";
 import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
@@ -11,10 +11,13 @@ const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 
 export interface CloudflaredNamedTunnelOptions {
   tunnelName: string;
+  tunnelId?: string;
   hostname: string;
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
+  stopTimeoutMs?: number;
+  spawnImpl?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
 
 export function normalizeNamedTunnelHostname(hostname: string): string {
@@ -35,10 +38,13 @@ export function normalizeNamedTunnelHostname(hostname: string): string {
 export class CloudflaredNamedTunnel implements TunnelProvider {
   readonly name = "cloudflare-named";
   private readonly tunnelName: string;
+  private readonly tunnelId?: string;
   private readonly hostname: string;
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
+  private readonly stopTimeoutMs: number;
+  private readonly spawnImpl: NonNullable<CloudflaredNamedTunnelOptions["spawnImpl"]>;
   private child: ChildProcess | null = null;
   private connected = false;
   private lastError: string | null = null;
@@ -49,10 +55,16 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       throw new Error("Named tunnel name must be between 1 and 128 characters");
     }
     this.tunnelName = tunnelName;
+    if (opts.tunnelId !== undefined && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(opts.tunnelId)) {
+      throw new Error("INVALID_TUNNEL_ID");
+    }
+    this.tunnelId = opts.tunnelId;
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
     this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    this.stopTimeoutMs = opts.stopTimeoutMs ?? 20_000;
+    this.spawnImpl = opts.spawnImpl ?? spawn;
   }
 
   private binary(): string | null {
@@ -65,6 +77,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
 
   async start(localPort: number): Promise<string> {
     if (this.child && this.connected) return this.publicUrl();
+    if (this.child) throw new Error("NAMED_TUNNEL_BUSY");
     const bin = this.binary();
     if (!bin) {
       throw new Error(
@@ -73,7 +86,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(
+      const child = this.spawnImpl(
         bin,
         [
           "tunnel",
@@ -82,7 +95,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
           `http://127.0.0.1:${localPort}`,
           ...tunnelProtocolArgs(),
           "run",
-          this.tunnelName,
+          this.tunnelId ?? this.tunnelName,
         ],
         { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
       );
@@ -100,7 +113,8 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       const timeout = setTimeout(() => {
         if (!this.connected) {
           this.lastError = "Named tunnel start timed out";
-          child.kill("SIGTERM");
+          try { child.kill("SIGTERM"); }
+          catch { /* Keep ownership until an exit is observed. */ }
           finish(() => reject(new Error(this.lastError ?? "Named tunnel start timed out")));
         }
       }, this.startTimeoutMs);
@@ -124,7 +138,10 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       if (child.stderr) scan(child.stderr);
 
       child.on("error", (error) => {
-        this.child = null;
+        // An error while stopping does not prove the owned process exited.
+        if (child.pid === undefined || child.exitCode != null || child.signalCode != null) {
+          if (this.child === child) this.child = null;
+        }
         this.connected = false;
         finish(() => reject(error));
       });
@@ -149,10 +166,25 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   }
 
   async stop(): Promise<void> {
-    if (this.child) {
-      this.child.kill("SIGTERM");
-      this.child = null;
+    const child = this.child;
+    if (child && child.exitCode == null && child.signalCode == null) {
+      await new Promise<void>((resolve, reject) => {
+        const exited = (): void => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => {
+          child.removeListener("exit", exited);
+          reject(new Error("NAMED_TUNNEL_STOP_TIMEOUT"));
+        }, this.stopTimeoutMs);
+        child.once("exit", exited);
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          clearTimeout(timer);
+          child.removeListener("exit", exited);
+          reject(new Error("NAMED_TUNNEL_STOP_FAILED"));
+        }
+      });
     }
+    if (this.child === child) this.child = null;
     this.connected = false;
   }
 

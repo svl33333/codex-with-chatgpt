@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 
 /**
  * State directory resolution, following OS conventions.
@@ -33,8 +34,18 @@ export function stateSubdir(name: string): string {
 
 /** Write a JSON file with owner-only permissions. */
 export function writeSecureJson(file: string, data: unknown): void {
+  writeSecureFile(file, JSON.stringify(data, null, 2));
+}
+
+export function writeSecureFile(file: string, content: string | Buffer): void {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+  const temporary = file + "." + randomUUID() + ".tmp";
+  try {
+    fs.writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, file);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
   try {
     fs.chmodSync(file, 0o600);
   } catch {

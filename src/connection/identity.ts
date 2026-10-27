@@ -3,6 +3,7 @@ import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { resolveWorkspaceRepository } from "../workspace/repository.js";
 import type { ChatGPTSurfaceId } from "../provisioning/chatgpt-surface.js";
+import { withWorkspaceOperation } from "../process/workspace-operation.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
 
@@ -43,8 +44,8 @@ function validInstallationId(value: unknown): value is string {
 
 /** Return the persistent per-installation identity without storing credentials. */
 export function getInstallationIdentity(): InstallationIdentity {
-  const existing = readJsonIfExists<InstallationIdentity>(installationFile());
-  if (existing && validInstallationId(existing.installationId)) return existing;
+  const existing = readInstallationIdentity();
+  if (existing) return existing;
   const now = new Date().toISOString();
   const created: InstallationIdentity = { installationId: randomUUID(), createdAt: now, updatedAt: now };
   writeSecureJson(installationFile(), created);
@@ -53,6 +54,11 @@ export function getInstallationIdentity(): InstallationIdentity {
 
 export function canonicalRepositoryFor(workspaceRoot: string): string {
   return resolveWorkspaceRepository(workspaceRoot).repository;
+}
+
+export function readInstallationIdentity(): InstallationIdentity | null {
+  const existing = readJsonIfExists<InstallationIdentity>(installationFile());
+  return existing && validInstallationId(existing.installationId) ? existing : null;
 }
 
 export function endpointFingerprint(endpoint: string | null | undefined, mode: EndpointMode): string {
@@ -84,8 +90,10 @@ export function readConnectionBinding(workspaceId: string): ConnectionBinding | 
 }
 
 export function writeConnectionBinding(binding: ConnectionBinding): ConnectionBinding {
-  writeSecureJson(bindingFile(binding.workspaceId), { ...binding, updatedAt: new Date().toISOString() });
-  return readConnectionBinding(binding.workspaceId) ?? binding;
+  return withWorkspaceOperation(binding.workspaceId, () => {
+    writeSecureJson(bindingFile(binding.workspaceId), { ...binding, updatedAt: new Date().toISOString() });
+    return readConnectionBinding(binding.workspaceId) ?? binding;
+  });
 }
 
 export function makeConnectionBinding(input: {
@@ -109,6 +117,7 @@ export function makeConnectionBinding(input: {
   const endpointMode = input.endpointMode ?? "ephemeral";
   const previous = readConnectionBinding(input.workspaceId);
   return {
+    ...previous,
     schemaVersion: 2,
     workspaceId: input.workspaceId,
     workspace: input.workspace,

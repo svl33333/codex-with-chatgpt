@@ -3,6 +3,8 @@ import path from "node:path";
 import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 
+export const RESTART_PROTOCOL = 1;
+
 /**
  * Runtime state file: how the CLI/Skill finds a running bridge for a
  * workspace. Contains the admin token, so it is 0600 and lives in the user

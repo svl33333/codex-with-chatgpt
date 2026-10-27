@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withWorkspaceOperation } from "../process/workspace-operation.js";
 import { findBinary } from "./detect.js";
 import { suggestedNamedHostname } from "./hostname.js";
 import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
@@ -186,7 +187,11 @@ export interface ProvisionNamedResult {
   error?: string;
 }
 
-export async function provisionNamedTunnel(opts: {
+export function provisionNamedTunnel(opts: Parameters<typeof provisionNamedTunnelLocked>[0]): Promise<ProvisionNamedResult> {
+  return withWorkspaceOperation(opts.workspaceId, () => provisionNamedTunnelLocked(opts));
+}
+
+async function provisionNamedTunnelLocked(opts: {
   workspaceId: string;
   workspaceName: string;
   zone: string;

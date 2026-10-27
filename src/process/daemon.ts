@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir, getStateDir } from "../config/paths.js";
 import { findBridgeObservation, findLiveBridge, probeBridge, readRuntimeState, type RuntimeState } from "../bridge/runtime.js";
 import { Workspace } from "../workspace/manager.js";
+import { withWorkspaceOperation } from "./workspace-operation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,7 +30,16 @@ export interface EnsureBridgeResult {
  * Ensure a bridge is running for the workspace. Reuses a live instance,
  * otherwise spawns a detached daemon and waits for it to become healthy.
  */
-export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
+export interface BridgeStartOptions {
+  port?: number;
+  restart?: { tunnelId: string; tunnelName: string; hostname: string };
+}
+
+export function ensureBridge(workspaceRoot: string, opts: BridgeStartOptions = {}): Promise<EnsureBridgeResult> {
+  return withWorkspaceOperation(new Workspace(workspaceRoot).id, () => spawnBridge(workspaceRoot, opts));
+}
+
+async function spawnBridge(workspaceRoot: string, opts: BridgeStartOptions): Promise<EnsureBridgeResult> {
   const workspace = new Workspace(workspaceRoot);
   const observation = await findBridgeObservation(workspace.id);
   if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
@@ -52,7 +62,9 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
   const { cmd, args } = cliEntry();
   const child = spawn(
     cmd,
-    [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
+    [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : []),
+      ...(opts.restart ? ["--restart-candidate", "--restart-tunnel-id", opts.restart.tunnelId,
+        "--restart-tunnel-name", opts.restart.tunnelName, "--restart-hostname", opts.restart.hostname] : [])],
     {
       detached: true,
       stdio: ["ignore", out, out],
@@ -61,18 +73,45 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
     }
   );
   child.unref();
+  let spawnFailed = false;
+  child.on("error", () => { spawnFailed = true; });
   fs.closeSync(out);
 
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const runtime = await findLiveBridge(workspace.id);
-    if (runtime) return { runtime, spawned: true };
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
+  try {
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const runtime = await findLiveBridge(workspace.id);
+      if (runtime) {
+        if (runtime.pid !== child.pid) throw new Error("BRIDGE_INSTANCE_MISMATCH");
+        return { runtime, spawned: true };
+      }
+      if (spawnFailed || (child.exitCode !== null && child.exitCode !== 0)) {
+        throw new Error("BRIDGE_START_FAILED");
+      }
     }
+    throw new Error("BRIDGE_START_TIMEOUT");
+  } catch (error) {
+    if (opts.restart && child.pid !== undefined && child.exitCode == null && child.signalCode == null) {
+      const exited = awaitOwnedChildExit(child);
+      // No tunnel is started until this function returns a healthy candidate.
+      try { child.kill("SIGTERM"); }
+      catch { /* A failed signal does not establish whether the child exited. */ }
+      await exited;
+    }
+    throw error;
   }
-  throw new Error(`Bridge did not become healthy within 20s. See ${logFile}`);
+}
+
+function awaitOwnedChildExit(child: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const exited = (): void => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      child.removeListener("exit", exited);
+      reject(new Error("RESTART_CANDIDATE_CLEANUP_FAILED"));
+    }, 20_000);
+    child.once("exit", exited);
+  });
 }
 
 export async function adminFetch<T = unknown>(
@@ -100,6 +139,10 @@ export async function adminFetch<T = unknown>(
 }
 
 export async function stopBridge(workspaceRoot: string): Promise<boolean> {
+  return withWorkspaceOperation(new Workspace(workspaceRoot).id, () => stopObservedBridge(workspaceRoot));
+}
+
+async function stopObservedBridge(workspaceRoot: string): Promise<boolean> {
   const workspace = new Workspace(workspaceRoot);
   const runtime = readRuntimeState(workspace.id);
   if (!runtime) return false;
