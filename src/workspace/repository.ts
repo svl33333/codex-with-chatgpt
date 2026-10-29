@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { EvidenceError, canonicalPath, observeGitRoot, readEvidenceGit, runEvidenceGit, validateEvidenceRevision } from "./git-evidence.js";
+import { EvidenceError, canonicalPath, observeGitRoot, readEvidenceGit, runEvidenceGit, validateEvidenceRevision, type EvidenceReadOptions } from "./git-evidence.js";
 
 export interface WorkspaceRepository {
   owner: string;
@@ -40,8 +40,8 @@ function safeConfigName(value: string): boolean {
   return Buffer.byteLength(value) <= 256 && /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(value) && !value.includes("..") && !value.includes("//");
 }
 
-function readOptionalConfig(root: string, key: string): string | null {
-  const result = runEvidenceGit(root, ["config", "--null", "--get-all", key], 4096);
+function readOptionalConfig(root: string, key: string, options: EvidenceReadOptions = {}): string | null {
+  const result = runEvidenceGit(root, ["config", "--null", "--get-all", key], 4096, options);
   if (result.code === 1) return null;
   if (result.code !== 0) throw new EvidenceError("REPOSITORY_UNAVAILABLE");
   const values = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout).split("\0");
@@ -50,18 +50,18 @@ function readOptionalConfig(root: string, key: string): string | null {
   return values[0];
 }
 
-export function resolveWorkspaceRepository(root: string): WorkspaceRepository | { repository: string; selection: "local-only" } {
-  const inside = runEvidenceGit(root, ["rev-parse", "--is-inside-work-tree"], 1024);
+export function resolveWorkspaceRepository(root: string, options: EvidenceReadOptions = {}): WorkspaceRepository | { repository: string; selection: "local-only" } {
+  const inside = runEvidenceGit(root, ["rev-parse", "--is-inside-work-tree"], 1024, options);
   if (inside.code !== 0) return { repository: `file:${canonicalPath(root)}`, selection: "local-only" };
-  const identity = observeGitRoot(root, { allowSubtree: true });
-  const symbolic = runEvidenceGit(root, ["symbolic-ref", "--quiet", "HEAD"], 4096);
+  const identity = observeGitRoot(root, { allowSubtree: true, readOptions: options });
+  const symbolic = runEvidenceGit(root, ["symbolic-ref", "--quiet", "HEAD"], 4096, options);
   if (symbolic.code !== 0) throw new EvidenceError("DETACHED_REPOSITORY_UNAVAILABLE");
   const ref = new TextDecoder("utf-8", { fatal: true }).decode(symbolic.stdout).trim();
   if (!ref.startsWith("refs/heads/")) throw new EvidenceError("REPOSITORY_UNAVAILABLE");
   const branch = ref.slice(11);
   if (!safeConfigName(branch)) throw new EvidenceError("REPOSITORY_UNAVAILABLE");
-  const upstreamRemote = readOptionalConfig(root, `branch.${branch}.remote`);
-  const upstreamRef = readOptionalConfig(root, `branch.${branch}.merge`);
+  const upstreamRemote = readOptionalConfig(root, `branch.${branch}.remote`, options);
+  const upstreamRef = readOptionalConfig(root, `branch.${branch}.merge`, options);
   let remote: string;
   let selection: WorkspaceRepository["selection"];
   let resolved: ReturnType<typeof parseGitHubRepository>;
@@ -72,17 +72,17 @@ export function resolveWorkspaceRepository(root: string): WorkspaceRepository | 
       if (!upstreamRef.startsWith("refs/") || /[~^]/.test(upstreamRef)) throw new Error("invalid upstream ref");
     } catch { throw new EvidenceError("INVALID_UPSTREAM_REMOTE"); }
     remote = upstreamRemote;
-    const url = readOptionalConfig(root, `remote.${remote}.url`);
+    const url = readOptionalConfig(root, `remote.${remote}.url`, options);
     if (!url) throw new EvidenceError("INVALID_UPSTREAM_REMOTE");
     resolved = parseGitHubRepository(url);
     selection = "branch-upstream";
   } else {
-    const remotes = readEvidenceGit(root, ["remote"], 16 * 1024).trim().split("\n").filter(Boolean);
+    const remotes = readEvidenceGit(root, ["remote"], 16 * 1024, options).trim().split("\n").filter(Boolean);
     if (remotes.length === 0) return { repository: `file:${identity.root}`, selection: "local-only" };
     if (remotes.length > 32 || remotes.some((name) => !safeConfigName(name))) throw new EvidenceError("AMBIGUOUS_REPOSITORY_REMOTE");
     const candidates: Array<{ remote: string; parsed: ReturnType<typeof parseGitHubRepository> }> = [];
     for (const name of remotes) {
-      const url = readOptionalConfig(root, `remote.${name}.url`);
+      const url = readOptionalConfig(root, `remote.${name}.url`, options);
       if (!url) continue;
       try { candidates.push({ remote: name, parsed: parseGitHubRepository(url) }); }
       catch (error) { if (!(error instanceof EvidenceError)) throw error; }

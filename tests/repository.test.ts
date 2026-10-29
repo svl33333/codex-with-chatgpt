@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as childProcess from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,11 +7,29 @@ import { parseGitHubRepository, resolveWorkspaceRepository } from "../src/worksp
 import { canonicalRepositoryFor } from "../src/connection/identity.js";
 import { cleanup, git, makeGitRepo, makeTmpDir } from "./helpers.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) cleanup(root); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) cleanup(root); });
 function createRepository() { const root = makeTmpDir("repository-selector"); roots.push(root); makeGitRepo(root); return root; }
 
 describe("shared workspace repository selection", () => {
+  it("propagates cancellation through remote config reads and refuses an expired deadline", () => {
+    const root = createRepository(); git(root, "remote", "add", "origin", "https://github.com/example/demo");
+    const controller = new AbortController(); const original = actualChildProcess.spawnSync; let reachedConfig = false;
+    vi.spyOn(childProcess, "spawnSync").mockImplementation((...args: Parameters<typeof childProcess.spawnSync>) => {
+      const result = Reflect.apply(original, childProcess, args);
+      if ((args[1] as string[]).includes("remote.origin.url")) { reachedConfig = true; controller.abort(); }
+      return result;
+    });
+    expect(() => resolveWorkspaceRepository(root, { signal: controller.signal, deadline: performance.now() + 60_000 })).toThrow("MANIFEST_CANCELLED");
+    expect(reachedConfig).toBe(true);
+    expect(() => resolveWorkspaceRepository(root, { deadline: performance.now() - 1 })).toThrow("MANIFEST_TIMEOUT");
+  });
   it("uses the unique GitHub remote when origin is absent", () => {
     const root = createRepository(); git(root, "remote", "add", "canonical", "git@github.com:Example/Demo.git");
     expect(resolveWorkspaceRepository(root)).toMatchObject({ repository: "https://github.com/example/demo", remote: "canonical", selection: "unique-github-remote" });

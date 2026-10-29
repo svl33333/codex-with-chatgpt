@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -160,6 +161,56 @@ describe("MCP tools over Streamable HTTP", () => {
       expect(denied.isError).toBe(true); expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
     } finally { await limited.close(); }
   });
+
+  it("returns only raw digests for an authorized large binary over HTTP", async () => {
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 0xff); bytes.write("binary\r\n");
+    const file = path.join(root, "large-manifest.bin"); fs.writeFileSync(file, bytes);
+    try {
+      const result = await client.callTool({ name: "list_work_product_manifest", arguments: { required_paths: ["large-manifest.bin"] } });
+      const observed = structuredJsonOf<{ complete: boolean; entries: { worktree_digest: string }[] }>(result);
+      expect(observed.complete).toBe(true);
+      expect(observed.entries[0].worktree_digest).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(textOf(result).length).toBeLessThan(10_000);
+      expect(JSON.stringify(result)).not.toContain("binary\\r\\n");
+    } finally { fs.unlinkSync(file); }
+  });
+
+  it("propagates an HTTP disconnect to the active manifest read and closes its descriptor", async () => {
+    const file = path.join(root, "cancel-manifest.bin"); const size = 64 * 1024 * 1024;
+    fs.writeFileSync(file, ""); fs.truncateSync(file, size);
+    const controller = new AbortController(); let descriptor: number | undefined; let bytesRead = 0;
+    let markClosed!: () => void; const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+    const originalOpen = fs.openSync; const originalRead = fs.read; const originalClose = fs.closeSync;
+    const open = vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      const opened = Reflect.apply(originalOpen, fs, args) as number;
+      if (args[0] === file) descriptor = opened;
+      return opened;
+    });
+    const read = vi.spyOn(fs, "read").mockImplementation(((...args: unknown[]) => {
+      const callback = args[5] as (error: NodeJS.ErrnoException | null, count: number, buffer: Buffer) => void;
+      args[5] = (error: NodeJS.ErrnoException | null, count: number, buffer: Buffer) => {
+        if (args[0] === descriptor && count) { bytesRead += count; controller.abort(); }
+        callback(error, count, buffer);
+      };
+      return Reflect.apply(originalRead, fs, args);
+    }) as typeof fs.read);
+    const close = vi.spyOn(fs, "closeSync").mockImplementation((closing) => {
+      originalClose(closing); if (closing === descriptor) markClosed();
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await expect(fetch(`${bridge.localBaseUrl()}/mcp`, {
+        method: "POST", signal: controller.signal,
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "cancel-manifest", method: "tools/call", params: { name: "list_work_product_manifest", arguments: { required_paths: ["cancel-manifest.bin"] } } }),
+      })).rejects.toMatchObject({ name: "AbortError" });
+      await Promise.race([closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("manifest descriptor remained open after disconnect")), 5_000); })]);
+      expect(bytesRead).toBeGreaterThan(0); expect(bytesRead).toBeLessThan(size);
+      expect(() => fs.fstatSync(descriptor!)).toThrow();
+    } finally {
+      controller.abort(); clearTimeout(timeout); open.mockRestore(); read.mockRestore(); close.mockRestore(); fs.unlinkSync(file);
+    }
+  }, 30_000);
 
   it("read_file denies .env with ACCESS_DENIED_SENSITIVE_FILE and no content", async () => {
     const result = await client.callTool({ name: "read_file", arguments: { path: ".env" } });
