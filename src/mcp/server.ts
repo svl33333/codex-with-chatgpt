@@ -393,7 +393,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     async (args, extra) => {
       const denied = requireScope(extra.authInfo, "workspace.read") ?? requireScope(extra.authInfo, "git.read");
       if (denied) return denied;
-      return okStructured(listWorkProductManifest(workspace, args.required_paths));
+      return okStructured(await listWorkProductManifest(workspace, args.required_paths, { signal: extra.signal }));
     }
   );
 

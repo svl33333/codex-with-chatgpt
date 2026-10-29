@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +18,26 @@ export class EvidenceError extends Error {
   }
 }
 
-export function runEvidenceGit(root: string, args: string[], maxBytes = MAX_OUTPUT) {
+export interface EvidenceReadOptions {
+  signal?: AbortSignal;
+  deadline?: number;
+  reserveBytes?: (count: number) => void;
+  onBytes?: (count: number) => void;
+}
+
+export function assertEvidenceReadAllowed(options: EvidenceReadOptions): void {
+  if (options.signal?.aborted) throw new EvidenceError("MANIFEST_CANCELLED");
+  if (options.deadline !== undefined && (!Number.isFinite(options.deadline) || performance.now() >= options.deadline)) {
+    throw new EvidenceError("MANIFEST_TIMEOUT");
+  }
+}
+
+function evidenceGitTimeout(options: EvidenceReadOptions): number {
+  assertEvidenceReadAllowed(options);
+  return options.deadline === undefined ? 10_000 : Math.min(10_000, Math.max(1, Math.ceil(options.deadline - performance.now())));
+}
+
+function evidenceGitInvocation(root: string, args: string[]) {
   if (!readCommands.has(args[0])) throw new EvidenceError("UNSUPPORTED_GIT_OPERATION");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
   const emptyConfig = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -28,18 +47,89 @@ export function runEvidenceGit(root: string, args: string[], maxBytes = MAX_OUTP
     GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0", GIT_ATTR_NOSYSTEM: "1",
     GIT_PROTOCOL_FROM_USER: "0", GIT_ALLOW_PROTOCOL: "", LC_ALL: "C",
   });
-  const command = spawnSync("git", ["-c", "core.fsmonitor=false", "-c", "protocol.allow=never", "-c", "core.quotePath=true", ...args], {
-    cwd: root, env, timeout: 10_000, maxBuffer: maxBytes, windowsHide: true,
-  });
+  return {
+    args: ["-c", "core.fsmonitor=false", "-c", "protocol.allow=never", "-c", "core.quotePath=true", ...args],
+    options: { cwd: root, env, windowsHide: true, shell: false as const },
+  };
+}
+
+export function runEvidenceGit(root: string, args: string[], maxBytes = MAX_OUTPUT, options: EvidenceReadOptions = {}) {
+  const timeout = evidenceGitTimeout(options);
+  const invocation = evidenceGitInvocation(root, args);
+  const command = spawnSync("git", invocation.args, { ...invocation.options, timeout, maxBuffer: maxBytes });
+  assertEvidenceReadAllowed(options);
   if (command.error || command.signal || command.stdout.length > maxBytes) throw new EvidenceError("GIT_EVIDENCE_UNAVAILABLE");
   return { code: command.status, stdout: command.stdout };
 }
 
-export function readEvidenceGit(root: string, args: string[], maxBytes = MAX_OUTPUT): string {
-  const command = runEvidenceGit(root, args, maxBytes);
+export function readEvidenceGit(root: string, args: string[], maxBytes = MAX_OUTPUT, options: EvidenceReadOptions = {}): string {
+  const command = runEvidenceGit(root, args, maxBytes, options);
   if (command.code !== 0) throw new EvidenceError("GIT_EVIDENCE_UNAVAILABLE");
   try { return decoder.decode(command.stdout); }
   catch { throw new EvidenceError("INVALID_GIT_ENCODING"); }
+}
+
+export async function readEvidenceBlobDigest(root: string, blob: string, expectedBytes: number, options: EvidenceReadOptions = {}): Promise<string> {
+  if (!SHA.test(blob) || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > MAX_OUTPUT) {
+    throw new EvidenceError("BLOB_UNAVAILABLE");
+  }
+  const timeout = evidenceGitTimeout(options);
+  options.reserveBytes?.(expectedBytes + 1);
+  const invocation = evidenceGitInvocation(root, ["cat-file", "blob", blob]);
+  const child = spawn("git", invocation.args, { ...invocation.options, stdio: ["ignore", "pipe", "pipe"] });
+  const hash = createHash("sha256");
+  let bytes = 0;
+  let stderrBytes = 0;
+  let failure: EvidenceError | undefined;
+  const stop = (error: EvidenceError) => {
+    failure ??= error;
+    child.kill("SIGKILL");
+    child.stdout.destroy();
+    child.stderr.destroy();
+  };
+  const abort = () => stop(new EvidenceError("MANIFEST_CANCELLED"));
+  const timer = setTimeout(() => stop(new EvidenceError(
+    options.deadline !== undefined && performance.now() >= options.deadline ? "MANIFEST_TIMEOUT" : "GIT_EVIDENCE_UNAVAILABLE"
+  )), timeout);
+  options.signal?.addEventListener("abort", abort, { once: true });
+  child.stdout.on("readable", () => {
+    if (failure) return;
+    try {
+      while (true) {
+        assertEvidenceReadAllowed(options);
+        const chunk = child.stdout.read(Math.min(64 * 1024, expectedBytes - bytes + 1)) as Buffer | null;
+        if (!chunk) break;
+        bytes += chunk.length;
+        options.onBytes?.(chunk.length);
+        if (bytes > expectedBytes) throw new EvidenceError("BLOB_UNAVAILABLE");
+        hash.update(chunk);
+      }
+    } catch (error) {
+      stop(error instanceof EvidenceError ? error : new EvidenceError("BLOB_UNAVAILABLE"));
+    }
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderrBytes += chunk.length;
+    if (stderrBytes > 64 * 1024) stop(new EvidenceError("GIT_EVIDENCE_UNAVAILABLE"));
+  });
+  child.stdout.on("error", () => stop(new EvidenceError("BLOB_UNAVAILABLE")));
+  child.stderr.on("error", () => stop(new EvidenceError("GIT_EVIDENCE_UNAVAILABLE")));
+  try {
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("error", () => { failure ??= new EvidenceError("GIT_EVIDENCE_UNAVAILABLE"); });
+      child.once("close", (code, signal) => resolve({ code, signal }));
+      if (options.signal?.aborted) abort();
+    });
+    if (failure) throw failure;
+    assertEvidenceReadAllowed(options);
+    if (exit.code !== 0 || exit.signal || bytes !== expectedBytes) throw new EvidenceError("BLOB_UNAVAILABLE");
+    return hash.digest("hex");
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }
 }
 
 export function digest(value: string | Buffer): string {
@@ -51,21 +141,21 @@ export function canonicalPath(value: string): string {
   return process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real;
 }
 
-export function observeGitRoot(root: string, opts: { allowSubtree?: boolean } = {}) {
+export function observeGitRoot(root: string, opts: { allowSubtree?: boolean; readOptions?: EvidenceReadOptions } = {}) {
   try {
     const physicalRoot = canonicalPath(root);
-    const top = readEvidenceGit(root, ["rev-parse", "--show-toplevel"], 16 * 1024).trim();
+    const top = readEvidenceGit(root, ["rev-parse", "--show-toplevel"], 16 * 1024, opts.readOptions).trim();
     const worktreeRoot = canonicalPath(top);
     if (physicalRoot !== worktreeRoot && !physicalRoot.startsWith(worktreeRoot + path.sep)) throw new EvidenceError("WORKSPACE_ROOT_MISMATCH");
     if (!opts.allowSubtree && physicalRoot !== worktreeRoot) throw new EvidenceError("WORKSPACE_ROOT_MISMATCH");
-    const gitDir = readEvidenceGit(root, ["rev-parse", "--absolute-git-dir"], 16 * 1024).trim();
-    const common = readEvidenceGit(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], 16 * 1024).trim();
-    const head = readEvidenceGit(root, ["rev-parse", "--verify", "HEAD"], 1024).trim();
+    const gitDir = readEvidenceGit(root, ["rev-parse", "--absolute-git-dir"], 16 * 1024, opts.readOptions).trim();
+    const common = readEvidenceGit(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], 16 * 1024, opts.readOptions).trim();
+    const head = readEvidenceGit(root, ["rev-parse", "--verify", "HEAD"], 1024, opts.readOptions).trim();
     if (!SHA.test(head)) throw new EvidenceError("INVALID_GIT_IDENTITY");
-    if (readEvidenceGit(root, ["for-each-ref", "--format=%(refname)", "refs/replace"], 64 * 1024).trim()) throw new EvidenceError("REPLACED_HISTORY_UNSUPPORTED");
+    if (readEvidenceGit(root, ["for-each-ref", "--format=%(refname)", "refs/replace"], 64 * 1024, opts.readOptions).trim()) throw new EvidenceError("REPLACED_HISTORY_UNSUPPORTED");
     const grafts = path.join(common, "info", "grafts");
     if (fs.existsSync(grafts) && fs.lstatSync(grafts).size !== 0) throw new EvidenceError("GRAFTED_HISTORY_UNSUPPORTED");
-    const shallow = readEvidenceGit(root, ["rev-parse", "--is-shallow-repository"], 1024).trim() === "true";
+    const shallow = readEvidenceGit(root, ["rev-parse", "--is-shallow-repository"], 1024, opts.readOptions).trim() === "true";
     return { root: physicalRoot, worktreeRoot, gitDir: canonicalPath(gitDir), commonDir: canonicalPath(common), head, gitIdentity: digest(canonicalPath(gitDir) + "\0" + canonicalPath(common)), shallow };
   } catch (error) {
     if (error instanceof EvidenceError) throw error;

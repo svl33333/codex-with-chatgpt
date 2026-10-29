@@ -12,10 +12,37 @@ nonempty set of workspace-relative regular files. It requires both existing
 `workspace.read` and `git.read` scopes. The reviewer determines the required
 set independently from the Issue, plan, source and status; the returned set
 does not certify its own sufficiency. There is no directory expansion or
-pagination. The limits are 256 paths, 1 MiB per file/blob, 256 KiB policy,
+pagination. The limits are 256 paths, 64 MiB per file/blob, 256 KiB policy,
 64 MiB index and 256 KiB for the entire serialized MCP response. Refusal,
 missing required files, unsupported modes/stages, read errors, drift or limits
 return `complete: false` with no successful partial entries.
+
+File and blob SHA-256 is incremental over raw bytes; the manifest does not
+transfer artifact bodies. Regular-file reads use a 64 KiB buffer and check
+descriptor/path identity, size, mode and timestamps before and after reading.
+Private file/index metadata also participates in the repeated observations
+to refuse detected same-byte replacements; it is not added to the response.
+Payload reads reserve at most 512 MiB per observation across worktree and
+index-blob layers (1 GiB across both observations), including one potential
+EOF-probe byte per present layer (at most 512 bytes per observation). A request
+whose payload alone fills the budget can therefore be refused conservatively.
+Blob reads consume at most 64 KiB per chunk and count a positive overflow probe
+before refusing it. This budget bounds consumed payload bytes, not Git's
+internal object/metadata I/O or OS pipe buffering. The three raw-index
+boundary reads retain their separate 64 MiB limit each (192 MiB total), plus
+one potential EOF-probe byte per boundary read.
+
+The server applies a 60-second request budget independently of the client's
+timeout. Each Git process uses the shorter of the remaining budget and the
+existing 10-second ceiling. Blob stdout must exactly match its declared size;
+stderr is bounded at 64 KiB. Cancellation, deadline expiry and aggregate I/O
+refusal produce `MANIFEST_CANCELLED`, `MANIFEST_TIMEOUT` and
+`MANIFEST_IO_LIMIT` respectively, with `complete: false`, `terminal: true`,
+`returnedCount: 0` and `entries: []`. Open descriptors are closed and streamed
+Git children are terminated and awaited on failure. The SDK request signal,
+including a disconnected HTTP request, reaches asynchronous payload reads.
+Cancellation notification processing can be delayed by synchronous metadata
+commands; kernel I/O is not guaranteed to stop in real time.
 
 Each entry maps to existing receipt fields `path/status/head_blob/index_digest/
 worktree_digest/mode`. `head_blob` is the Git object ID; `index_digest` is
@@ -43,6 +70,13 @@ repository selection, scope and page coverage. Any drift or incomplete
 acquisition requires fresh evidence. A complete single call is a bounded
 observation, not an atomic snapshot or a freshness guarantee for other calls.
 It grants no content verdict or canonical workflow transition.
+
+Large-artifact identity does not recover Provider-result JSON export or
+transfer from Code Mode to a separate analysis environment. A full diff must
+still arrive through the existing supported evidence/proof path without
+omission or reconstruction. Source merge alone does not activate a consumer:
+release/adoption, exact source activation and connector re-observation remain
+separate requirements under the applicable recorded workflow.
 
 `git_history` returns bounded full-ID local history. `git_compare` compares
 explicit local revisions and pages its diff with `nextOffset` and the returned

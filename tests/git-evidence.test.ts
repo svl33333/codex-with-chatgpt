@@ -2,11 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { readGitComparison, readGitHistory, resolveEvidenceCommit, validateEvidenceRevision } from "../src/workspace/git-evidence.js";
+import * as childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { EvidenceError, readEvidenceBlobDigest, readGitComparison, readGitHistory, resolveEvidenceCommit, runEvidenceGit, validateEvidenceRevision } from "../src/workspace/git-evidence.js";
 import { cleanup, git, makeGitRepo, makeTmpDir, write } from "./helpers.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) cleanup(root); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); for (const root of roots.splice(0)) cleanup(root); });
 function repository() { const root = makeTmpDir("git-evidence"); roots.push(root); makeGitRepo(root); return root; }
 function commit(root: string, file: string, body: string, subject = "fixture change") {
   write(root, file, body); git(root, "add", "-f", "--", file); git(root, "commit", "-m", subject); return git(root, "rev-parse", "HEAD").trim();
@@ -252,4 +261,98 @@ describe("bounded read-only local Git evidence", () => {
     git(root, "add", "large-a.txt", "large-b.txt"); git(root, "commit", "-m", "aggregate bound fixture");
     expect(() => readGitComparison(root, { base, head: "HEAD" })).toThrow("DIFF_TOO_LARGE");
   }, 120_000);
+});
+
+describe("streamed read-only Git blobs", () => {
+  function blob(root: string, bytes: Buffer) {
+    fs.writeFileSync(path.join(root, "stream.bin"), bytes); git(root, "add", "stream.bin");
+    return git(root, "rev-parse", ":stream.bin").trim();
+  }
+
+  function childDouble() {
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => {
+      setImmediate(() => child.emit("close", null, "SIGKILL")); return true;
+    }) });
+    vi.spyOn(childProcess, "spawn").mockReturnValueOnce(child as unknown as ReturnType<typeof childProcess.spawn>);
+    return child;
+  }
+
+  it("streams raw binary bytes through the existing safe Git settings", async () => {
+    const root = repository(); const bytes = Buffer.alloc(2 * 1024 * 1024, 0xff); bytes.write("raw\r\n");
+    const id = blob(root, bytes); const spawned = vi.spyOn(childProcess, "spawn");
+    let received = 0; let maximumChunk = 0;
+    expect(await readEvidenceBlobDigest(root, id, bytes.length, { onBytes(count) { received += count; maximumChunk = Math.max(maximumChunk, count); } }))
+      .toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(received).toBe(bytes.length); expect(maximumChunk).toBeLessThanOrEqual(64 * 1024);
+    expect(spawned).toHaveBeenCalledOnce();
+    const [command, args, options] = spawned.mock.calls[0];
+    expect(command).toBe("git"); expect(args).toContain("core.fsmonitor=false"); expect(args).toContain("protocol.allow=never");
+    expect(options).toMatchObject({ shell: false, windowsHide: true, env: { GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "" } });
+  });
+
+  it("cancels a real blob process midstream and waits for its close before rejecting", async () => {
+    const root = repository(); const bytes = Buffer.alloc(8 * 1024 * 1024, 0xa5); const id = blob(root, bytes);
+    const originalSpawn = actualChildProcess.spawn; let closed = false; let killed = false;
+    vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof childProcess.spawn>) => {
+      const child = Reflect.apply(originalSpawn, childProcess, args);
+      child.once("close", () => { closed = true; killed = child.killed; }); return child;
+    });
+    const controller = new AbortController(); let received = 0;
+    await expect(readEvidenceBlobDigest(root, id, bytes.length, { signal: controller.signal, onBytes(count) { received += count; controller.abort(); } }))
+      .rejects.toThrow("MANIFEST_CANCELLED");
+    expect(received).toBeGreaterThan(0); expect(received).toBeLessThan(bytes.length); expect(closed).toBe(true); expect(killed).toBe(true);
+  });
+
+  it("refuses missing blobs and declared byte counts that do not match the process output", async () => {
+    const root = repository(); const bytes = Buffer.from("fixture\r\n"); const id = blob(root, bytes);
+    await expect(readEvidenceBlobDigest(root, "0".repeat(40), bytes.length)).rejects.toThrow("BLOB_UNAVAILABLE");
+    let consumed = 0; let reserved = 0;
+    await expect(readEvidenceBlobDigest(root, id, bytes.length - 1, {
+      reserveBytes(count) { reserved += count; }, onBytes(count) { consumed += count; },
+    })).rejects.toThrow("BLOB_UNAVAILABLE");
+    expect(consumed).toBe(bytes.length); expect(reserved).toBe(bytes.length);
+    await expect(readEvidenceBlobDigest(root, id, bytes.length + 1)).rejects.toThrow("BLOB_UNAVAILABLE");
+  });
+
+  it("rejects spawn failures without returning a digest", async () => {
+    const root = repository(); const child = childDouble();
+    const pending = readEvidenceBlobDigest(root, "a".repeat(40), 1);
+    setImmediate(() => { child.emit("error", new Error("fixture spawn failure")); child.emit("close", -2, null); });
+    await expect(pending).rejects.toThrow("GIT_EVIDENCE_UNAVAILABLE");
+    expect(child.stdout.destroyed).toBe(true); expect(child.stderr.destroyed).toBe(true);
+  });
+
+  it("kills stderr overflow and pipe failures and waits for close", async () => {
+    const root = repository();
+    for (const failure of ["stderr", "stdout"]) {
+      const child = childDouble(); const pending = readEvidenceBlobDigest(root, "a".repeat(40), 1);
+      setImmediate(() => failure === "stderr" ? child.stderr.write(Buffer.alloc(64 * 1024 + 1)) : child.stdout.emit("error", new Error("fixture pipe failure")));
+      await expect(pending).rejects.toThrow(failure === "stderr" ? "GIT_EVIDENCE_UNAVAILABLE" : "BLOB_UNAVAILABLE");
+      expect(child.kill).toHaveBeenCalled(); expect(child.stdout.destroyed).toBe(true); expect(child.stderr.destroyed).toBe(true);
+    }
+  });
+
+  it("enforces the request deadline and destroys both pipes after the timed-out child closes", async () => {
+    const root = repository(); const child = childDouble();
+    await expect(readEvidenceBlobDigest(root, "a".repeat(40), 1, { deadline: performance.now() + 25 })).rejects.toThrow("MANIFEST_TIMEOUT");
+    expect(child.kill).toHaveBeenCalled(); expect(child.stdout.destroyed).toBe(true); expect(child.stderr.destroyed).toBe(true);
+  });
+
+  it("keeps the existing ten-second process ceiling when no request deadline was provided", async () => {
+    const root = repository(); vi.useFakeTimers(); const child = childDouble();
+    const rejection = expect(readEvidenceBlobDigest(root, "a".repeat(40), 1)).rejects.toThrow("GIT_EVIDENCE_UNAVAILABLE");
+    await vi.advanceTimersByTimeAsync(10_001); await rejection;
+    expect(child.kill).toHaveBeenCalled(); expect(child.stdout.destroyed).toBe(true);
+  });
+
+  it("does not spawn for unsafe identity, cancellation, expired budget, or aggregate reservation refusal", async () => {
+    const root = repository(); const spawned = vi.spyOn(childProcess, "spawn");
+    const controller = new AbortController(); controller.abort();
+    await expect(readEvidenceBlobDigest(root, "--help", 1)).rejects.toThrow("BLOB_UNAVAILABLE");
+    await expect(readEvidenceBlobDigest(root, "a".repeat(40), 1, { signal: controller.signal })).rejects.toThrow("MANIFEST_CANCELLED");
+    await expect(readEvidenceBlobDigest(root, "a".repeat(40), 1, { deadline: performance.now() - 1 })).rejects.toThrow("MANIFEST_TIMEOUT");
+    await expect(readEvidenceBlobDigest(root, "a".repeat(40), 1, { reserveBytes() { throw new EvidenceError("MANIFEST_IO_LIMIT"); } })).rejects.toThrow("MANIFEST_IO_LIMIT");
+    expect(spawned).not.toHaveBeenCalled();
+    expect(() => runEvidenceGit(root, ["rev-parse", "HEAD"], 1024, { deadline: performance.now() - 1 })).toThrow("MANIFEST_TIMEOUT");
+  });
 });
