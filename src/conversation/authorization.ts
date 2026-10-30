@@ -17,6 +17,72 @@ import {
   type GitHubOperationTarget,
 } from "./operation.js";
 import { assertTeamAiAuthResult, type TeamAiCapabilityResult } from "./teamai.js";
+import { assertMaintenanceAuthority, maintenanceEventKey, maintenanceReceiptSchema, maintenanceTargetDigest, renderMaintenanceResult, type MaintenanceAuthority, type MaintenanceProof, type MaintenanceReceipt } from "./maintenance-handoff.js";
+import { assertMaintenanceReturnPermit, withDelegationGrantLease } from "./delegation.js";
+import { sanitizeExecutionOutput } from "../execution/sanitize.js";
+
+const maintenanceSendClaims = new WeakMap<MaintenanceReceipt, { eventKey: string; targetDigest: string; payloadHash: string }>();
+
+export function consumeMaintenanceSendClaim(receipt: MaintenanceReceipt): void {
+  const claim = maintenanceSendClaims.get(receipt);
+  maintenanceSendClaims.delete(receipt);
+  if (!claim || claim.eventKey !== receipt.eventKey || claim.targetDigest !== maintenanceTargetDigest(receipt.target) || claim.payloadHash !== receipt.payloadHash) throw new Error("maintenance submit requires the unconsumed atomic claim, not a receipt");
+}
+
+export function readMaintenanceReceipt(eventKey: string): MaintenanceReceipt | null {
+  const file = stateFile("receipts", eventKey);
+  if (!fs.existsSync(file)) return null;
+  const receipt = maintenanceReceiptSchema.parse(readJsonIfExists<unknown>(file));
+  if (receipt.eventKey !== eventKey) throw new Error("maintenance receipt identity mismatch");
+  return receipt;
+}
+
+function saveMaintenanceReceipt(receipt: MaintenanceReceipt): MaintenanceReceipt {
+  const current = readMaintenanceReceipt(receipt.eventKey);
+  if ((current?.generation ?? 0) !== receipt.generation - 1) throw new Error("maintenance receipt generation conflict");
+  const parsed = maintenanceReceiptSchema.parse(receipt);
+  writeAtomicSecureJson(stateFile("receipts", receipt.eventKey), parsed);
+  return parsed;
+}
+
+export function prepareMaintenanceReceiptOwnedLease(authority: MaintenanceAuthority, proof: MaintenanceProof): MaintenanceReceipt {
+  assertMaintenanceReturnPermit(proof, authority);
+  const eventKey = maintenanceEventKey(authority.target);
+  const payloadHash = createHash("sha256").update(renderMaintenanceResult(authority.target)).digest("hex");
+  const current = readMaintenanceReceipt(eventKey);
+  if (current) {
+    if (maintenanceTargetDigest(current.target) !== maintenanceTargetDigest(authority.target) || current.payloadHash !== payloadHash || current.grantId !== proof.grantId) throw new Error("maintenance event cannot change payload or binding");
+    return current;
+  }
+  return saveMaintenanceReceipt({ schemaVersion: 1, profile: "maintenance-v1.2/end-of-turn-browser-v1", generation: 1,
+    eventKey, target: authority.target, grantId: proof.grantId, payloadHash, state: "PREPARED", sendAttempts: 0 });
+}
+
+export function claimMaintenanceSendOwnedLease(authority: MaintenanceAuthority, proof: MaintenanceProof): { claimed: boolean; receipt: MaintenanceReceipt } {
+  return withDelegationGrantLease(proof.grantId, undefined, () => {
+    assertMaintenanceReturnPermit(proof, authority);
+    const receipt = readMaintenanceReceipt(proof.eventKey);
+    if (!receipt || receipt.grantId !== proof.grantId || maintenanceTargetDigest(receipt.target) !== maintenanceTargetDigest(authority.target)) throw new Error("maintenance prepared receipt unavailable");
+    // Reservation recovery never recreates the one Browser submit right.
+    if (receipt.state !== "PREPARED" || receipt.sendAttempts !== 0) return { claimed: false, receipt };
+    const claimed = saveMaintenanceReceipt({ ...receipt, generation: receipt.generation + 1, state: "SENDING", sendAttempts: 1 });
+    maintenanceSendClaims.set(claimed, { eventKey: claimed.eventKey, targetDigest: maintenanceTargetDigest(claimed.target), payloadHash: claimed.payloadHash });
+    return { claimed: true, receipt: claimed };
+  });
+}
+
+export function observeMaintenanceSend(eventKey: string, payloadHash: string, observation: { visible: boolean; remoteId?: string; observedEventKey?: string; observedPayloadHash?: string; reason?: string; errorPhase?: "submit" | "observe" }): MaintenanceReceipt {
+  return withEventLease(eventKey, () => {
+    const receipt = readMaintenanceReceipt(eventKey);
+    if (!receipt || receipt.payloadHash !== payloadHash || receipt.sendAttempts !== 1) throw new Error("maintenance observation has no matching send");
+    if (!["SENDING", "AMBIGUOUS", "RECONCILING"].includes(receipt.state)) return receipt;
+    const visible = observation.visible && observation.observedEventKey === eventKey && observation.observedPayloadHash === payloadHash;
+    const filtered = typeof observation.reason === "string" ? sanitizeExecutionOutput(observation.reason) : undefined;
+    const reason = filtered ? filtered.allowed ? filtered.text.slice(0, 512) : "Browser failure details withheld by existing output filter" : undefined;
+    return saveMaintenanceReceipt({ ...receipt, generation: receipt.generation + 1, state: visible ? "DELIVERED_VISIBLE" : "AMBIGUOUS", ...(observation.remoteId ? { remoteId: observation.remoteId } : {}),
+      ...(reason ? { reason, errorPhase: observation.errorPhase } : {}) });
+  });
+}
 
 export type DeliveryMessageType = "INIT" | "HANDOFF" | "PLAN" | "EXECUTED" | "REVIEW" | "RE_REVIEW";
 
@@ -495,7 +561,7 @@ function loadReceipt(eventKey: string): C2cDeliveryReceipt | null {
   const file = stateFile("receipts", eventKey);
   if (!fs.existsSync(file)) return null;
   const value = readJsonIfExists<C2cDeliveryReceipt>(file);
-  if (!value || value.schemaVersion !== 1 || value.eventKey !== eventKey) {
+  if (!value || value.schemaVersion !== 1 || value.eventKey !== eventKey || Object.hasOwn(value, "profile")) {
     throw new Error("malformed delivery receipt record; refusing implicit recovery");
   }
   if (value.delegation !== undefined && !validDelegationReference(value.delegation)) throw new Error("malformed delegation reference; refusing implicit recovery");

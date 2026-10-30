@@ -18,6 +18,8 @@ import {
   type GitHubOperationRecord,
 } from "./operation.js";
 import { readDeliveryReceiptForOperation } from "./authorization.js";
+import { z } from "zod";
+import { assertMaintenanceAuthority, MAINTENANCE_HANDOFF_POLICY, maintenanceEventKey, maintenanceGrantSchema, maintenanceProofSchema, maintenanceTargetDigest, type MaintenanceAuthority, type MaintenanceGrant, type MaintenanceProof } from "./maintenance-handoff.js";
 import { Workspace } from "../workspace/manager.js";
 import { gitStatus } from "../workspace/git.js";
 import {
@@ -929,7 +931,7 @@ function persistReservation(reservation: DelegationReservation): DelegationReser
 export function loadDelegationReservation(reservationId: string): DelegationReservation | null {
   const result = readStrictJsonFile<DelegationReservation>(reservationFile(reservationId));
   if (result.status === "MISSING") return null;
-  if (result.status !== "OK" || !result.value || result.value.schemaVersion !== 1) throw new Error("unsupported or corrupt delegation reservation record");
+  if (result.status !== "OK" || !result.value || result.value.schemaVersion !== 1 || Object.hasOwn(result.value, "policyVersion")) throw new Error("unsupported or corrupt delegation reservation record");
   return result.value;
 }
 
@@ -1383,6 +1385,70 @@ function evaluateWorkspaceReadTarget(scope: DelegationScope, target: WorkspaceRe
 
 export function delegationStateRoot(): string {
   return delegationRoot();
+}
+
+const maintenancePermits = new WeakMap<MaintenanceProof, MaintenanceAuthority>();
+const maintenanceReservationSchema = z.object({
+  schemaVersion: z.literal(1), policyVersion: z.literal(MAINTENANCE_HANDOFF_POLICY),
+  reservationId: z.string(), grantId: z.string(), grantGeneration: z.number().int().positive(),
+  targetDigest: z.string(), action: z.literal("maintenance_handoff"), state: z.literal("CONSUMED"),
+}).strict();
+
+export function loadMaintenanceGrant(grantId: string): MaintenanceGrant | null {
+  if (!/^maintenance:[a-f0-9]{64}$/.test(grantId)) throw new Error("invalid maintenance grant identity");
+  const raw = readStrictJsonFile<unknown>(grantFile(grantId));
+  if (raw.status === "MISSING") return null;
+  if (raw.status !== "OK") throw new Error("corrupt maintenance grant");
+  const grant = maintenanceGrantSchema.parse(raw.value);
+  if (grant.grantId !== grantId || grant.targetDigest !== maintenanceTargetDigest(grant.target)) throw new Error("maintenance grant identity mismatch");
+  return grant;
+}
+
+export function reserveMaintenanceReturn(authority: MaintenanceAuthority): MaintenanceProof {
+  assertMaintenanceAuthority(authority);
+  const eventKey = maintenanceEventKey(authority.target);
+  const grantId = eventKey;
+  return withGrantLock(grantId, undefined, () => {
+    const targetDigest = maintenanceTargetDigest(authority.target);
+    let grant = loadMaintenanceGrant(grantId);
+    if (!grant) {
+      grant = maintenanceGrantSchema.parse({ schemaVersion: 1, policyVersion: MAINTENANCE_HANDOFF_POLICY,
+        action: "maintenance_handoff", grantId, generation: 1, target: authority.target, targetDigest,
+        approval: authority.approval, notBefore: authority.notBefore, expiresAt: authority.expiresAt,
+        status: "APPROVED_ACTIVE", maxUses: 1, useCount: 0 });
+      writeAtomicSecureJson(grantFile(grantId), grant);
+    }
+    if (grant.targetDigest !== targetDigest || JSON.stringify(grant.approval) !== JSON.stringify(authority.approval)) throw new Error("maintenance grant cannot change target or approval");
+    if (grant.status !== "APPROVED_ACTIVE" || Date.parse(grant.notBefore) > Date.now() || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("maintenance grant is not active");
+    const reservationId = digest({ grantId, eventKey });
+    const stored = readStrictJsonFile<unknown>(reservationFile(reservationId));
+    if (stored.status === "MISSING") {
+      if (grant.useCount !== 0) throw new Error("consumed maintenance grant has no reservation; reconcile only");
+      writeAtomicSecureJson(reservationFile(reservationId), maintenanceReservationSchema.parse({
+        schemaVersion: 1, policyVersion: MAINTENANCE_HANDOFF_POLICY, reservationId, grantId,
+        grantGeneration: grant.generation, targetDigest, action: "maintenance_handoff", state: "CONSUMED",
+      }));
+    } else {
+      if (stored.status !== "OK") throw new Error("corrupt maintenance reservation");
+      const reservation = maintenanceReservationSchema.parse(stored.value);
+      if (reservation.reservationId !== reservationId || reservation.grantId !== grantId || reservation.grantGeneration !== grant.generation || reservation.targetDigest !== targetDigest) throw new Error("maintenance reservation conflict");
+    }
+    if (grant.useCount === 0) {
+      writeAtomicSecureJson(grantFile(grantId), { ...grant, useCount: 1 });
+      appendAudit({ at: new Date().toISOString(), grantId, action: "maintenance_handoff", decision: "CONSUMED", reservationId, targetDigest });
+    }
+    const proof = Object.freeze(maintenanceProofSchema.parse({ schemaVersion: 1, policyVersion: MAINTENANCE_HANDOFF_POLICY,
+      action: "maintenance_handoff", decision: "ALLOW", grantId, reservationId, eventKey, targetDigest }));
+    maintenancePermits.set(proof, authority);
+    return proof;
+  });
+}
+
+export function assertMaintenanceReturnPermit(proof: MaintenanceProof, authority: MaintenanceAuthority): void {
+  assertMaintenanceAuthority(authority);
+  if (!proof || maintenancePermits.get(proof) !== authority || proof.eventKey !== maintenanceEventKey(authority.target) || proof.targetDigest !== maintenanceTargetDigest(authority.target)) throw new Error("serialized maintenance proof cannot authorize transport");
+  const grant = loadMaintenanceGrant(proof.grantId);
+  if (!grant || grant.status !== "APPROVED_ACTIVE" || grant.useCount !== 1 || grant.targetDigest !== proof.targetDigest || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("maintenance return grant unavailable");
 }
 
 /** Strict raw-boundary parser for CLI and other A1 authorization JSON. */

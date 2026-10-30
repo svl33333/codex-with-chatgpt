@@ -10,6 +10,49 @@ description: >
 
 # Codex with ChatGPT
 
+## Explicit Maintenance end-of-turn Browser handoff
+
+Use this section only for an approved Maintenance v1.2 Goal/Plan carrying
+`handoff_profile: maintenance-v1.2/end-of-turn-browser-v1`.
+It does not replace canonical routing, Doctor gates, old grants, state/pin,
+or the legacy EXECUTED/PLAN wait below.
+
+The source contract is `createMaintenanceHandoffTransaction`. Its trusted
+in-process host port must read formal human-origin Goal/Plan send permission,
+the existing exact Project/ordinary-Chat binding and provider records. It is
+not a JSON proof, a bool written by the model, a URL check, or a new Browser
+driver. No official host adapter is installed by this source increment.
+`c2c maintenance-handoff status` reports that limitation; prepare/observe/
+reconcile fail closed without one. Never supply a fixture, arbitrary module,
+cookie/private API, or another browser as the operational host.
+
+After all approved work, tests and internal review, save the real result in
+the existing filtered execution output/logger and bind operation/Goal/Plan,
+actual worktree/HEAD and provider session/turn. Before final_answer, use the
+existing official IAB once with the exact existing receiver. Only the fresh
+atomic PREPARED->SENDING claim permits submit. SENDING/visible/UNKNOWN
+reentry and A1 reservation recovery permit reconciliation only.
+
+The `[CODEX-GENERATED TASK RESULT]` envelope is a saved-result notice with
+`workflow_authority: none`, not canonical EXECUTED, human approval, a review
+verdict, or the current turn's not-yet-emitted terminal/full final. Perform
+one small visible-message observation, preserve pending on ambiguity, then
+emit a short final referring to the saved result and END THIS CODEX TURN.
+Do not wait for the next PLAN in this Maintenance sending turn.
+
+In a separate ordinary-Chat assistant turn, ChatGPT independently obtains the
+actual provider terminal and full final, evaluates them and generates the
+next instruction. A trusted existing forward owner must have separately
+authorized execution and atomically compare expected session/preceding turn
+with the actual start. A normal turn/start, queue or steer cannot substitute.
+Missing capability, intervening turn, omitted final or UNKNOWN means no
+forward and preserved A2 pending; never blind resend or repeat completed work.
+Use existing manual handoff if the official route cannot continue.
+
+Source/fixture checks are not real Browser send, two-cycle E2E, installed
+adoption, release, merge or production acceptance. Each retains its existing
+authority and evidence requirements. No Dot, scheduler, DB or daemon is added.
+
 ChatGPT thinks. Codex works.
 
 You (Codex) own execution: editing, shell, git, tests, recovery.

@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseStrictJson } from "../config/strict-json.js";
 import { confinedFile, readBoundedText, type CanonicalSelection } from "./canonical.js";
+import { MAINTENANCE_HANDOFF_PROFILE, type MaintenanceTarget } from "../conversation/maintenance-handoff.js";
 
 export const CONTINUATION_KEYS = ["Use C2C.", "For any GitHub authentication, authorization, device-flow, email-verification, credential-context, or recovery event, resolve and use the current TeamAI github-cli-auth Skill."] as const;
 const identifier = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/);
@@ -13,6 +14,24 @@ export const goalSchema = z.object({
   continuationKeys: z.tuple([z.literal(CONTINUATION_KEYS[0]), z.literal(CONTINUATION_KEYS[1])]),
 }).strict();
 export type DurableGoal = z.infer<typeof goalSchema>;
+export const maintenanceGoalSchema = goalSchema.omit({ selection: true }).extend({
+  profile: z.literal(MAINTENANCE_HANDOFF_PROFILE), planRef: z.string().min(1), recordRef: z.string().min(1),
+  selection: z.object({ repository: z.string().min(1), workspaceId: z.string().min(1), workspaceRoot: z.string().min(1),
+    worktreeRoot: z.string().min(1), workstream: identifier, branch: z.string().min(1) }).strict(),
+}).strict();
+export type MaintenanceGoal = z.infer<typeof maintenanceGoalSchema>;
+
+export function assertMaintenanceGoalIdentity(input: MaintenanceGoal, target: MaintenanceTarget): MaintenanceGoal {
+  const goal = maintenanceGoalSchema.parse(input);
+  if (goal.id !== target.goalId || goal.planRef !== target.planRef || Object.entries(goal.selection).some(([name, value]) => target[name as keyof MaintenanceTarget] !== value)) throw new Error("maintenance Goal target mismatch");
+  return goal;
+}
+
+export function assertMaintenanceGoalTarget(input: MaintenanceGoal, target: MaintenanceTarget): MaintenanceGoal {
+  const goal = assertMaintenanceGoalIdentity(input, target);
+  if (Date.parse(goal.createdAt) > Date.now() || Date.parse(goal.expiresAt) <= Date.now() || Date.parse(goal.createdAt) >= Date.parse(goal.expiresAt)) throw new Error("maintenance Goal is not active");
+  return goal;
+}
 export interface GoalObservation { goal: DurableGoal; digest: string; bytes: number }
 
 export function readDurableGoal(file: string, selection: CanonicalSelection, now = Date.now()): GoalObservation {

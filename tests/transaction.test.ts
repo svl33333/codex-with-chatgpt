@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDurableTransportTransaction } from "../src/conversation/transaction.js";
 import { createDelegationGrant, delegationApprovalDigest, delegationScopeDigest, delegationTargetDigest, normalizeDelegationScope } from "../src/conversation/delegation.js";
 import { createTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiCapabilityProvider } from "../src/conversation/teamai.js";
-import type { TransportBindingIdentity } from "../src/conversation/authorization.js";
+import type { TransportBindingIdentity, DeliveryMessageType } from "../src/conversation/authorization.js";
 import type { MessageAdapter } from "../src/conversation/delivery.js";
 import { getInstallationIdentity, readWorktreeIdentity } from "../src/connection/identity.js";
 import { cleanup, isolateStateDir, makeGitRepo } from "./helpers.js";
@@ -42,6 +42,25 @@ function appendDelegationApproval(exact: TransportBindingIdentity, record: { dec
   fs.appendFileSync(file, `delegation_approval:\n  decision_id: ${record.decisionId}\n  approved_digest: ${record.approvedDigest}\n  action: ${record.action}\n  scope_digest: ${record.scopeDigest}\n  target_digest: ${record.targetDigest}\n  approved_at: ${record.approvedAt}\n  approver_identity_ref: human:step4\n`);
   return file;
 }
+
+describe("canonical/Maintenance transaction separation", () => {
+  it("rejects Maintenance action text without rewriting canonical state", () => {
+    const isolated = isolateStateDir();
+    try {
+      makeGitRepo(isolated);
+      getInstallationIdentity();
+      const exact = binding(isolated);
+      writeCanonicalState(exact);
+      const statePath = path.join(exact.workspaceRoot!, ".harness", exact.workstreamId!, "state.yaml");
+      const original = fs.readFileSync(statePath);
+      expect(() => createDurableTransportTransaction().beginAndPrepare({
+        workflowStep: 5, stage: exact.stage, issuerId: "fixture-canonical-owner", messageType: "maintenance_handoff" as DeliveryMessageType,
+        binding: exact, sourceCheckpoint: exact.checkpoint, sourceStage: exact.stage, eventKey: exact.eventKey, payloadHash: "fixture-payload",
+      })).toThrow();
+      expect(fs.readFileSync(statePath)).toEqual(original);
+    } finally { cleanup(isolated); }
+  });
+});
 
 describe("durable transport transaction surface", () => {
   let stateDir: string;

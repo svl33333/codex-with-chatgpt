@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   consumeReviewerResponse,
+  consumeMaintenanceSendClaim,
   deriveActiveCanonicalBinding,
   createWorkflowAuthorizationIssuer,
   issueDeliveryAuthorization,
@@ -20,6 +21,11 @@ import { deliverMessage, type MessageAdapter } from "../src/conversation/deliver
 import { createTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiCapabilityProvider } from "../src/conversation/teamai.js";
 import { getInstallationIdentity, readWorktreeIdentity } from "../src/connection/identity.js";
 import { cleanup, git, isolateStateDir, makeGitRepo } from "./helpers.js";
+
+it("refuses serialized SENDING receipts as fresh Maintenance submit authority", () => {
+  const receipt = JSON.parse('{"state":"SENDING","sendAttempts":1,"profile":"maintenance-v1.2/end-of-turn-browser-v1"}');
+  expect(() => consumeMaintenanceSendClaim(receipt)).toThrow(/unconsumed atomic claim/);
+});
 
 function binding(eventKey = "c2c_test1"): TransportBindingIdentity {
   const root = process.env.C2C_STATE_DIR ?? "C:/workspace";

@@ -87,6 +87,9 @@ import {
   type TransportBindingIdentity,
 } from "../conversation/authorization.js";
 import { createDurableTransportTransaction } from "../conversation/transaction.js";
+import { createMaintenanceHandoffTransaction } from "../conversation/transaction.js";
+import { maintenanceGoalSchema } from "../runner/goal.js";
+import { MAINTENANCE_HANDOFF_PROFILE, maintenanceTargetSchema } from "../conversation/maintenance-handoff.js";
 import { assertTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiObservation } from "../conversation/teamai.js";
 import type { GitHubOperationKind, GitHubOperationTarget } from "../conversation/operation.js";
 import type { AuthorizedMessageAdapter } from "../conversation/delivery.js";
@@ -3139,6 +3142,23 @@ program.command("runner").description("Opt-in partial A2 foundation").command("r
       say(JSON.stringify(outcome));
     } catch { say(JSON.stringify({ outcome: "CAPABILITY_BLOCKED", reason: "INVALID_OR_UNAVAILABLE_CONTEXT", iteration: 0, executed: false })); }
   });
+
+const maintenanceHandoff = program.command("maintenance-handoff").description("Explicit Maintenance end-of-turn handoff; requires an adopted official host adapter");
+maintenanceHandoff.command("status").action(() => {
+  console.log(JSON.stringify({ profile: MAINTENANCE_HANDOFF_PROFILE, hostAdapter: "not_configured", dispatch: "disabled", realE2e: "NOT_PROVEN" }));
+});
+for (const action of ["prepare", "observe", "reconcile"] as const) {
+  maintenanceHandoff.command(action).requiredOption("--request-file <path>", "Goal and exact target references; no host adapter or proof injection")
+    .action(async (opts) => {
+      const request = parseStrictJson<{ goal: unknown; target: unknown }>(readCappedUtf8(path.resolve(opts.requestFile), 32 * 1024));
+      if (!request || Object.keys(request).some((key) => key !== "goal" && key !== "target")) throw new Error("unsupported Maintenance request fields");
+      const goal = maintenanceGoalSchema.parse(request.goal);
+      const target = maintenanceTargetSchema.parse(request.target);
+      // The source increment does not install a host/provider or accept a script as one.
+      const transaction = createMaintenanceHandoffTransaction();
+      console.log(JSON.stringify(action === "prepare" ? await transaction.prepare(goal, target) : await transaction.reconcile(goal, target)));
+    });
+}
 
 program.parseAsync(process.argv).catch((error: Error) => {
   cross(error.message);
