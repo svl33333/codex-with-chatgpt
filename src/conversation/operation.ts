@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeAtomicSecureJson } from "../config/paths.js";
+import { withLease } from "../config/lease.js";
 
 export type GitHubOperationKind =
   | "issue_create"
@@ -211,79 +211,8 @@ function operationLockFile(key: string): string {
   return path.join(getStateDir(), "transport", "operations", ".locks", `${key}.lock`);
 }
 
-interface OperationLeaseRecord {
-  leaseId: string;
-  pid: number;
-  acquiredAt: string;
-}
-
-function readOperationLease(file: string): OperationLeaseRecord | null {
-  try {
-    const value = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<OperationLeaseRecord>;
-    const pid = value.pid;
-    if (typeof value.leaseId !== "string" || typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof value.acquiredAt !== "string") return null;
-    return { leaseId: value.leaseId, pid, acquiredAt: value.acquiredAt };
-  } catch {
-    return null;
-  }
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function removeDeadOperationLease(file: string, expected: OperationLeaseRecord): void {
-  const current = readOperationLease(file);
-  if (!current || current.leaseId !== expected.leaseId) return;
-  try {
-    fs.rmSync(file, { force: true });
-  } catch {
-    // Another owner may have released or replaced the lease.
-  }
-}
-
 function withOperationLease<T>(key: string, action: () => T): T {
-  const file = operationLockFile(key);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const leaseId = randomUUID();
-  let descriptor: number | null = null;
-  let acquired = false;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      descriptor = fs.openSync(file, "wx", 0o600);
-      acquired = true;
-      fs.writeFileSync(descriptor, JSON.stringify({ leaseId, pid: process.pid, acquiredAt: new Date().toISOString() } satisfies OperationLeaseRecord), "utf8");
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        const owner = readOperationLease(file);
-        const age = Date.now() - fs.statSync(file).mtimeMs;
-        // An old lease is reclaimable only when its recorded owner is no
-        // longer alive. Never delete a live owner's lock based on age alone.
-        if (age > 30_000 && owner && !processIsAlive(owner.pid)) removeDeadOperationLease(file, owner);
-      } catch {
-        // A concurrent owner may have released the lease.
-      }
-    }
-  }
-  if (descriptor === null) throw new Error("GitHub operation is locked");
-  try {
-    return action();
-  } finally {
-    try { fs.closeSync(descriptor); } catch { /* best effort */ }
-    if (acquired) {
-      try {
-        const current = readOperationLease(file);
-        if (current?.leaseId === leaseId) fs.rmSync(file, { force: true });
-      } catch { /* stale lease recovery handles cleanup */ }
-    }
-  }
+  return withLease(operationLockFile(key), action);
 }
 
 /** Persist one immutable target identity; a changed payload for its key fails closed. */

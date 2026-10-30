@@ -36,12 +36,12 @@ function clockNow(clock: LeaseOptions["clock"]): number {
 }
 
 function ownerAlive(pid: number, check: LeaseOptions["processIsAlive"]): boolean {
-  if (check) return check(pid);
   try {
+    if (check) return check(pid);
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
@@ -78,6 +78,27 @@ function leaseAgeMs(file: string, record: LeaseRecord, now: number): number {
     return Math.max(0, now - fs.statSync(file).mtimeMs);
   } catch {
     return 0;
+  }
+}
+
+function reclaimDeadLease(file: string, expected: LeaseRecord, options: LeaseOptions): void {
+  const claim = file + ".reclaim." + Buffer.from(expected.leaseId).toString("base64url");
+  try { fs.linkSync(file, claim); }
+  catch { return; }
+  try {
+    const linked = readLease(claim);
+    const current = readLease(file);
+    if (linked?.leaseId !== expected.leaseId || linked.pid !== expected.pid || linked.acquiredAt !== expected.acquiredAt ||
+        current?.leaseId !== expected.leaseId || current.pid !== expected.pid || current.acquiredAt !== expected.acquiredAt) return;
+    const claimedFile = fs.lstatSync(claim);
+    const currentFile = fs.lstatSync(file);
+    if (!claimedFile.isFile() || !currentFile.isFile() || claimedFile.ino !== currentFile.ino || claimedFile.dev !== currentFile.dev ||
+        ownerAlive(current.pid, options.processIsAlive)) return;
+    // The exclusive inode claim prevents a second stale observer from removing a replacement lease.
+    fs.unlinkSync(file);
+  } catch { /* Unavailable ownership evidence cannot authorize removal. */ }
+  finally {
+    try { fs.unlinkSync(claim); } catch { /* An orphaned claim remains fail closed. */ }
   }
 }
 
@@ -125,11 +146,7 @@ export function acquireLease(file: string, options: LeaseOptions = {}): Acquired
       if (!current) continue;
       const age = leaseAgeMs(file, current, clockNow(options.clock));
       if (age <= staleAfterMs || ownerAlive(current.pid, options.processIsAlive)) continue;
-      // Re-read immediately before removal so a concurrent owner cannot be
-      // removed after replacing the old record.
-      const confirmed = readLease(file);
-      if (confirmed?.leaseId !== current.leaseId) continue;
-      try { fs.rmSync(file, { force: true }); } catch { /* retry */ }
+      reclaimDeadLease(file, current, options);
     }
   }
   throw new Error("lease is locked");

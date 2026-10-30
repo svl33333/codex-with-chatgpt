@@ -7,6 +7,7 @@ import { createDelegationGrant, delegationApprovalDigest, delegationScopeDigest,
 import { createTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiCapabilityProvider } from "../src/conversation/teamai.js";
 import type { TransportBindingIdentity, DeliveryMessageType } from "../src/conversation/authorization.js";
 import type { MessageAdapter } from "../src/conversation/delivery.js";
+import { buildC2cEnvelope } from "../src/conversation/envelope.js";
 import { getInstallationIdentity, readWorktreeIdentity } from "../src/connection/identity.js";
 import { cleanup, isolateStateDir, makeGitRepo } from "./helpers.js";
 
@@ -73,6 +74,8 @@ describe("durable transport transaction surface", () => {
 
   it("executes prepare, TeamAI pass-through, browser observation, and one response through the runtime seam", async () => {
     const exact = binding(stateDir);
+    const envelope = buildC2cEnvelope({ type: "EXECUTED", taskId: exact.taskId, iteration: 1, checkpoint: exact.checkpoint,
+      stage: exact.stage, workspaceId: exact.workspaceId, eventKey: exact.eventKey, intent: "bounded transaction" });
     writeCanonicalState(exact);
     const transaction = createDurableTransportTransaction();
     const prepared = transaction.beginAndPrepare({
@@ -84,7 +87,7 @@ describe("durable transport transaction surface", () => {
       sourceCheckpoint: exact.checkpoint,
       sourceStage: exact.stage,
       eventKey: exact.eventKey,
-      payloadHash: "payload-transaction",
+      payloadHash: envelope.payloadHash,
     });
     expect(prepared.receipt.state).toBe("PREPARED");
 
@@ -109,7 +112,7 @@ describe("durable transport transaction surface", () => {
         return { remoteId: "transaction-bubble" };
       }
       async observeVisibleBubble() {
-        return { visible: true, remoteId: "transaction-bubble", evidenceHash: "transaction-proof", observedEventKey: exact.eventKey, observedPayloadHash: "payload-transaction" };
+        return { visible: true, remoteId: "transaction-bubble", evidenceHash: "transaction-proof", observedEventKey: exact.eventKey, observedPayloadHash: envelope.payloadHash };
       }
       async getMessageStatus() {
         return "accepted" as const;
@@ -120,13 +123,13 @@ describe("durable transport transaction surface", () => {
       taskId: exact.taskId,
       iteration: 1,
       messageId: exact.eventKey,
-      text: "[C2C] bounded transaction",
+      text: envelope.text,
       workspaceId: exact.workspaceId,
       workstreamId: exact.workstreamId,
       binding: exact,
       authorization: prepared.authorization,
       messageType: "EXECUTED",
-      payloadHash: "payload-transaction",
+      payloadHash: envelope.payloadHash,
     }, adapter);
     expect(delivered.receipt?.state).toBe("DELIVERED_VISIBLE");
     expect(adapter.sends).toBe(1);

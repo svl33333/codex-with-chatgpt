@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   consumeReviewerResponse,
@@ -70,14 +71,16 @@ function teamAiResult(classification: "healthy" | "credential_context_unavailabl
   return resolveTeamAiAuthResult(provider, { correlationId, expectedAccount, authAttemptId: correlationId, restrictedContextError: "hosts.yml: Access is denied" });
 }
 
-function buildTestIntent(exact: TransportBindingIdentity, stateDir: string) {
+function buildTestIntent(exact: TransportBindingIdentity, stateDir: string, textOverride?: string) {
   const envelope = buildC2cEnvelope({ type: "EXECUTED", taskId: exact.taskId, iteration: 0, checkpoint: exact.checkpoint,
     stage: exact.stage, workspaceId: exact.workspaceId, eventKey: exact.eventKey, intent: "bounded test result" });
+  const text = textOverride ?? envelope.text;
+  const payloadHash = createHash("sha256").update(text).digest("hex").slice(0, 32);
   const authorization = issueDeliveryAuthorization({ issuer: issuerFor(exact, stateDir), binding: exact,
     sourceCheckpoint: exact.checkpoint, sourceStage: exact.stage, messageType: "EXECUTED", eventKey: exact.eventKey,
-    payloadHash: envelope.payloadHash });
-  return { taskId: exact.taskId, iteration: 0, messageId: exact.eventKey, text: envelope.text, workspaceId: exact.workspaceId,
-    workstreamId: exact.workstreamId, binding: exact, authorization, messageType: "EXECUTED" as const, payloadHash: envelope.payloadHash };
+    payloadHash });
+  return { taskId: exact.taskId, iteration: 0, messageId: exact.eventKey, text, workspaceId: exact.workspaceId,
+    workstreamId: exact.workstreamId, binding: exact, authorization, messageType: "EXECUTED" as const, payloadHash };
 }
 
 describe("durable authorized C2C delivery", () => {
@@ -88,6 +91,17 @@ describe("durable authorized C2C delivery", () => {
     getInstallationIdentity();
   });
   afterEach(() => cleanup(stateDir));
+
+  it.each(["altered", "oversized"])("rejects an %s canonical body before preparing a send claim", async variant => {
+    const exact = binding("c2c_body_boundary");
+    const intent = buildTestIntent(exact, stateDir, variant === "oversized" ? "x".repeat(1025) : undefined);
+    if (variant === "altered") intent.text = "another body with the original declared payload hash";
+    let sends = 0;
+    const adapter: MessageAdapter = { async sendMessage() { sends++; return {}; }, async getMessageStatus() { return "unknown"; } };
+    await expect(deliverMessage(intent, adapter)).rejects.toThrow(/payload|envelope/);
+    expect(sends).toBe(0);
+    expect(readDeliveryReceipt(exact.eventKey)).toBeNull();
+  });
 
   it("allows one send when a second caller enters the same event during an unfinished submission", async () => {
     const exact = binding("c2c_parallel"); const intent = buildTestIntent(exact, stateDir);

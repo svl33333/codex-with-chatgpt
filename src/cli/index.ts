@@ -75,6 +75,7 @@ import {
 import { appendExecutionRecord, bindExecutionToCanonicalReview } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { messageIdempotencyKey } from "../conversation/delivery.js";
+import { MAX_C2C_ENVELOPE_BYTES } from "../conversation/envelope.js";
 import {
   deriveActiveCanonicalBinding,
   readDeliveryAuthorization,
@@ -2424,7 +2425,7 @@ transport
       if (binding.eventKey !== opts.eventKey || authorization.eventKey !== opts.eventKey) throw new Error("delivery event key does not match the exact binding");
       const loaded = await import(pathToFileURL(path.resolve(opts.adapterModule)).href);
       const adapter = requireAuthorizedMessageAdapter(loaded.default ?? loaded.adapter);
-      const text = readCappedUtf8(path.resolve(opts.textFile), 64 * 1024);
+      const text = readCappedUtf8(path.resolve(opts.textFile), MAX_C2C_ENVELOPE_BYTES);
       const transaction = createDurableTransportTransaction();
       const outcome = await transaction.deliver({
         taskId: opts.taskId,

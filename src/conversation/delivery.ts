@@ -17,6 +17,7 @@ import type { IabAdapter } from "./iab-adapter.js";
 import { assertDelegatedTransportPermit, type DelegatedTransportPermit } from "./delegation.js";
 import { consumeMaintenanceSendClaim, observeMaintenanceSend } from "./authorization.js";
 import { renderMaintenanceResult, type MaintenanceHost, type MaintenanceReceipt } from "./maintenance-handoff.js";
+import { hashC2cEnvelope, MAX_C2C_ENVELOPE_BYTES } from "./envelope.js";
 
 export async function deliverMaintenanceNotice(receipt: MaintenanceReceipt, browser: NonNullable<MaintenanceHost["browser"]>) {
   if (receipt.state !== "SENDING" || receipt.sendAttempts !== 1) throw new Error("maintenance delivery requires the atomic send claim");
@@ -314,6 +315,9 @@ async function deliverAuthorizedMessage(
   key: string,
   checkpoint: DeliveryCheckpoint
 ): Promise<DeliveryOutcome> {
+  if (Buffer.byteLength(intent.text, "utf8") > MAX_C2C_ENVELOPE_BYTES || hashC2cEnvelope(intent.text) !== intent.payloadHash) {
+    throw new Error("canonical envelope body exceeds its bound or mismatches the authorized payload");
+  }
   const binding = authorizedBinding(intent);
   const authorization = intent.authorization!;
   if (authorization.delegation) {

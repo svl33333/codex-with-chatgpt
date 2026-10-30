@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DeliveryMessageType } from "./authorization.js";
 
-const MAX_BYTES = 1024;
+export const MAX_C2C_ENVELOPE_BYTES = 1024;
 const MAX_VALUE = 160;
 
 export interface C2cEnvelopeInput {
@@ -26,6 +26,10 @@ export interface C2cEnvelope {
   byteLength: number;
   fragmented: false;
   reducedFields: string[];
+}
+
+export function hashC2cEnvelope(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 
 function value(value: string | undefined, limit = MAX_VALUE): string | undefined {
@@ -83,19 +87,19 @@ export function buildC2cEnvelope(input: C2cEnvelopeInput): C2cEnvelope {
   if ((input.evidence?.length ?? 0) > 4) reducedFields.push("evidence");
   if (Object.keys(input.counts ?? {}).length > 8) reducedFields.push("counts");
   if ((input.intent?.length ?? 0) > 220) reducedFields.push("intent");
-  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) {
+  if (Buffer.byteLength(text, "utf8") > MAX_C2C_ENVELOPE_BYTES) {
     text = render({ ...input, evidence: undefined, counts: undefined, bindingHash: undefined }, true);
     for (const field of ["evidence", "counts", "bindingHash"]) if (!reducedFields.includes(field)) reducedFields.push(field);
   }
-  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) {
+  if (Buffer.byteLength(text, "utf8") > MAX_C2C_ENVELOPE_BYTES) {
     text = render({ ...input, workstreamId: undefined, state: undefined }, false);
     for (const field of ["workstreamId", "state"]) if (!reducedFields.includes(field)) reducedFields.push(field);
   }
   const byteLength = Buffer.byteLength(text, "utf8");
-  if (byteLength > MAX_BYTES) throw new Error("C2C envelope exceeds 1 KiB after deterministic reduction");
+  if (byteLength > MAX_C2C_ENVELOPE_BYTES) throw new Error("C2C envelope exceeds 1 KiB after deterministic reduction");
   return {
     text,
-    payloadHash: createHash("sha256").update(text).digest("hex").slice(0, 32),
+    payloadHash: hashC2cEnvelope(text),
     byteLength,
     fragmented: false,
     reducedFields,

@@ -30,6 +30,55 @@ import { isAppSelectionVerifiedForIntent, readAppSelection, recordAppSelection }
 import { mergeSession, readSession, writeSession } from "../src/session/state.js";
 import { cleanup, git, isolateStateDir, makeGitRepo, makeTmpDir } from "./helpers.js";
 import { writeSecureFile, writeSecureJson, writeAtomicSecureJson } from "../src/config/paths.js";
+import { acquireLease, type AcquiredLease } from "../src/config/lease.js";
+
+describe("lease recovery ownership", () => {
+  let stateDir: string;
+  beforeEach(() => { stateDir = isolateStateDir(); });
+  afterEach(() => { vi.restoreAllMocks(); cleanup(stateDir); });
+  const dead = { schemaVersion: 1, leaseId: "dead-owner", pid: 999999, acquiredAt: new Date(0).toISOString() };
+  const options = { staleAfterMs: 0, attempts: 4, processIsAlive: (pid: number) => pid !== dead.pid };
+
+  it("admits only one owner when two stale reclaimers interleave before removal", () => {
+    const file = path.join(stateDir, "owner.lock"); fs.writeFileSync(file, JSON.stringify(dead));
+    const originalRead = fs.readFileSync;
+    let reads = 0; let outer: AcquiredLease | undefined; let inner: AcquiredLease | undefined;
+    vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      const bytes = Reflect.apply(originalRead, fs, args);
+      if (args[0] === file && ++reads === 2) {
+        try { inner = acquireLease(file, options); } catch (error) { expect(String(error)).toMatch(/locked/); }
+      }
+      return bytes;
+    });
+    try {
+      try { outer = acquireLease(file, options); } catch (error) { expect(String(error)).toMatch(/locked/); }
+      expect([outer, inner].filter(Boolean)).toHaveLength(1);
+      expect(JSON.parse(originalRead(file, "utf8")).leaseId).toBe((outer ?? inner)!.record.leaseId);
+    } finally { vi.restoreAllMocks(); outer?.release(); inner?.release(); }
+  });
+
+  it("does not reclaim an owner whose liveness observation is denied", () => {
+    const file = path.join(stateDir, "owner.lock"); const before = JSON.stringify(dead); fs.writeFileSync(file, before);
+    vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("synthetic denied observation"), { code: "EPERM" }); });
+    expect(() => acquireLease(file, { staleAfterMs: 0, attempts: 2 })).toThrow(/locked/);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it.each(["EACCES", "EOPNOTSUPP"])("preserves a dead lease when atomic recovery claim creation fails with %s", code => {
+    const file = path.join(stateDir, "owner.lock"); const before = JSON.stringify(dead); fs.writeFileSync(file, before);
+    vi.spyOn(fs, "linkSync").mockImplementation(() => { throw Object.assign(new Error("synthetic link failure"), { code }); });
+    expect(() => acquireLease(file, options)).toThrow(/locked/);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("retains an orphaned recovery claim for explicit reconciliation", () => {
+    const file = path.join(stateDir, "owner.lock"); const before = JSON.stringify(dead); fs.writeFileSync(file, before);
+    const claim = file + ".reclaim." + Buffer.from(dead.leaseId).toString("base64url"); fs.linkSync(file, claim);
+    expect(() => acquireLease(file, options)).toThrow(/locked/);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(fs.readFileSync(claim, "utf8")).toBe(before);
+  });
+});
 
 describe("atomic state persistence compatibility", () => {
   let stateDir: string;

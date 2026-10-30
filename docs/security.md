@@ -156,6 +156,14 @@ Grant leases are owner-checked and injectable-clock driven. A stale lock is
 reclaimed only when its recorded process is dead; age alone never reclaims a
 live owner. Exact grant expiry is `notBefore <= now < expiresAt`.
 
+Dead-owner recovery takes an exclusive same-filesystem hardlink claim before
+removing the old lease. An unavailable hardlink, unknown process liveness, or
+an orphaned recovery claim keeps the lease locked. Reconcile such claims only
+while the participating writers are quiescent. All concurrent writers must
+use this claim protocol; older binaries with unguarded stale removal cannot
+safely share these records during adoption. Source integration does not
+activate or migrate an installed consumer.
+
 ## What ChatGPT can never do (V1)
 
 Write files, delete files, run shell commands, commit, install packages —
