@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-with-chatgpt.local/schema/delegation-proof.schema.json",
+  "title": "A1 Delegation Decision Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "decision", "action", "decisionDigest"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "decision": { "enum": ["ALLOW", "DENY"] },
+    "action": { "type": "string", "maxLength": 128 },
+    "route": { "enum": ["DELEGATED_TRANSPORT", "LOCAL_WORKSPACE_READ", "KNOWN_OPERATION_RECONCILE"] },
+    "reason": { "type": "string", "maxLength": 64 },
+    "grantId": { "type": "string", "maxLength": 128 },
+    "grantGeneration": { "type": "integer", "minimum": 0 },
+    "scopeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "targetDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "bindingDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "decisionInstanceId": { "type": "string", "maxLength": 128 },
+    "reservationId": { "type": "string", "maxLength": 128 },
+    "now": { "type": "integer", "minimum": 0 },
+    "notBefore": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "useCount": { "type": "integer", "minimum": 0 },
+    "maxUses": { "type": "integer", "minimum": 1 },
+    "operationKey": { "type": "string", "maxLength": 128 },
+    "evidencePath": { "enum": ["local_persisted", "provider_bound"] },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "skillName", "capabilityVersion", "classification", "correlationId"],
+      "properties": {
+        "source": { "const": "teamai" },
+        "skillName": { "const": "github-cli-auth" },
+        "capabilityVersion": { "type": "string", "maxLength": 128 },
+        "classification": { "enum": ["healthy", "credential_context_unavailable", "auth_invalid_or_expired", "human_security_boundary", "capability_unavailable"] },
+        "expectedAccount": { "type": "string", "maxLength": 256 },
+        "correlationId": { "type": "string", "maxLength": 256 },
+        "authAttemptId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "decisionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

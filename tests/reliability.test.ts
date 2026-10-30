@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -29,6 +29,50 @@ import { bindConversation, readConversationBinding } from "../src/conversation/r
 import { isAppSelectionVerifiedForIntent, readAppSelection, recordAppSelection } from "../src/conversation/app-selection.js";
 import { mergeSession, readSession, writeSession } from "../src/session/state.js";
 import { cleanup, git, isolateStateDir, makeGitRepo, makeTmpDir } from "./helpers.js";
+import { writeSecureFile, writeSecureJson, writeAtomicSecureJson } from "../src/config/paths.js";
+
+describe("atomic state persistence compatibility", () => {
+  let stateDir: string;
+  beforeEach(() => { stateDir = isolateStateDir(); });
+  afterEach(() => { vi.restoreAllMocks(); cleanup(stateDir); });
+
+  it("keeps legacy saves atomic without fsync and requests file durability only on the explicit route", () => {
+    const file = path.join(stateDir, "state.json");
+    const fsync = vi.spyOn(fs, "fsyncSync");
+    writeSecureFile(file, "legacy bytes");
+    writeSecureJson(file, { legacy: true });
+    expect(fsync).not.toHaveBeenCalled();
+    writeAtomicSecureJson(file, { durable: true });
+    expect(fsync).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ durable: true });
+    expect(fs.readdirSync(stateDir)).toEqual(["state.json"]);
+    if (process.platform !== "win32") expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it.each(["writeFileSync", "fsyncSync", "closeSync", "renameSync"] as const)("preserves old raw bytes and removes its temporary after %s failure", operation => {
+    const file = path.join(stateDir, "state.json");
+    const before = Buffer.from([0, 255, 13, 10, 7]);
+    fs.writeFileSync(file, before);
+    vi.spyOn(fs, operation).mockImplementationOnce(() => { throw new Error("synthetic save failure"); });
+    expect(() => writeAtomicSecureJson(file, { replacement: true })).toThrow("synthetic save failure");
+    expect(fs.readFileSync(file)).toEqual(before);
+    expect(fs.readdirSync(stateDir)).toEqual(["state.json"]);
+  });
+
+  it("preserves another writer's temporary when exclusive creation fails", () => {
+    const file = path.join(stateDir, "state.json");
+    fs.writeFileSync(file, "old bytes");
+    let foreignTemporary = "";
+    vi.spyOn(fs, "openSync").mockImplementationOnce(temporary => {
+      foreignTemporary = String(temporary);
+      fs.writeFileSync(foreignTemporary, "foreign bytes");
+      throw new Error("synthetic exclusive-create collision");
+    });
+    expect(() => writeAtomicSecureJson(file, { replacement: true })).toThrow("synthetic exclusive-create collision");
+    expect(fs.readFileSync(file, "utf8")).toBe("old bytes");
+    expect(fs.readFileSync(foreignTemporary, "utf8")).toBe("foreign bytes");
+  });
+});
 
 function binding(overrides: Partial<ConnectionBinding> = {}): ConnectionBinding {
   return {
@@ -435,6 +479,40 @@ describe("message delivery idempotency", () => {
 
   const intent = { taskId: "task-1", iteration: 2, messageId: "message-1", text: "bounded task" };
 
+  it("refuses unreadable checkpoints without using them as an absent record", async () => {
+    const key = messageIdempotencyKey(intent); const file = path.join(stateDir, "messages", `${key}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "retained private bytes");
+    const adapter = new FakeMessages();
+    const read = vi.spyOn(fs, "readFileSync").mockImplementationOnce(() => { throw Object.assign(new Error("synthetic denied read"), { code: "EACCES" }); });
+    try { await expect(deliverMessage(intent, adapter)).rejects.toThrow(/checkpoint/); }
+    finally { read.mockRestore(); }
+    expect(adapter.sendCalls).toBe(0);
+    expect(fs.readFileSync(file, "utf8")).toBe("retained private bytes");
+  });
+
+  it.each(["payload", "identity", "schema", "state", "malformed"])("retains a rejected %s checkpoint without sending or replacing its bytes", variant => {
+    const key = messageIdempotencyKey(intent);
+    const file = path.join(stateDir, "messages", `${key}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const saved = {
+      schemaVersion: 1, idempotencyKey: key, taskId: intent.taskId, iteration: intent.iteration, messageId: intent.messageId,
+      messageHash: createHash("sha256").update(intent.text).digest("hex").slice(0, 24),
+      state: "sending", sendAttempts: 1, updatedAt: "2026-10-12T00:00:00.000Z",
+    };
+    const before = variant === "malformed" ? Buffer.from("{incomplete") : Buffer.from(JSON.stringify({
+      ...saved, ...(variant === "payload" ? { messageHash: "other-payload" } : {}),
+      ...(variant === "identity" ? { idempotencyKey: "other-key" } : {}),
+      ...(variant === "schema" ? { schemaVersion: 99 } : {}), ...(variant === "state" ? { state: "UNKNOWN_NEW_STATE" } : {}),
+    }));
+    fs.writeFileSync(file, before);
+    const adapter = new FakeMessages();
+    return expect(deliverMessage(intent, adapter)).rejects.toThrow(/checkpoint/).then(() => {
+      expect(adapter.sendCalls).toBe(0);
+      expect(adapter.statusCalls).toBe(0);
+      expect(fs.readFileSync(file)).toEqual(before);
+    });
+  });
+
   it("confirms a successful send and remains idempotent on restart", async () => {
     const adapter = new FakeMessages();
     adapter.status = "accepted";
@@ -529,5 +607,52 @@ describe("conversation registry identity", () => {
     expect(readConversationBinding(workspaceId, { ...common, stage: "planning" })?.conversationId).toBe("conversation-plan");
     expect(readConversationBinding(workspaceId, { ...common, stage: "plan_review", role: "reviewer" })?.conversationId).toBe("conversation-review");
     expect(() => readConversationBinding(workspaceId, { ...common, stage: "planning", workspace: "wrong" })).toThrow(/identity mismatch/);
+  });
+
+  it("keeps an operation target bound to the exact review conversation", () => {
+    const workspaceId = "workspace-operation";
+    const target = {
+      kind: "issue_update" as const,
+      repository: "https://github.com/example/demo",
+      logicalOperationId: "issue-update-6",
+      issueNumber: 6,
+      expectedRevision: "revision-6",
+    };
+    bindConversation(workspaceId, {
+      projectId: "project-1",
+      conversationId: "conversation-review",
+      workspace: "demo",
+      repository: target.repository,
+      workId: "issue-6",
+      stage: "pr_review",
+      role: "reviewer",
+      checkpoint: "c2c_operation",
+      eventKey: "c2c_operation",
+      operationKey: "operation-a",
+      operationTarget: target,
+      updatedAt: new Date().toISOString(),
+    });
+    expect(
+      readConversationBinding(workspaceId, {
+        repository: target.repository,
+        workId: "issue-6",
+        stage: "pr_review",
+        role: "reviewer",
+        checkpoint: "c2c_operation",
+        eventKey: "c2c_operation",
+        operationKey: "operation-a",
+        operationTarget: target,
+      })?.operationTarget
+    ).toEqual(target);
+    expect(() => readConversationBinding(workspaceId, {
+      repository: target.repository,
+      workId: "issue-6",
+      stage: "pr_review",
+      role: "reviewer",
+      checkpoint: "c2c_operation",
+      eventKey: "c2c_operation",
+      operationKey: "operation-a",
+      operationTarget: { ...target, expectedRevision: "other" },
+    })).toThrow(/identity mismatch/);
   });
 });

@@ -6,6 +6,12 @@ const skill = fs.readFileSync(path.join(process.cwd(), "skill", "SKILL.md"), "ut
 const normalizedSkill = skill.replace(/\s+/g, " ");
 
 describe("Codex-native Skill contract", () => {
+  it("adds durable transport while preserving the existing reviewer and connection responsibilities", () => {
+    for (const phrase of ["createDurableTransportTransaction()", "single composer submit", "never permits a blind resend", "resolveTeamAiAuthResult", "Runtime connection owner's responsibility"]) {
+      expect(normalizedSkill).toContain(phrase);
+    }
+    expect(normalizedSkill.indexOf("### Durable transport and recovery guard")).toBeLessThan(normalizedSkill.indexOf("## Reviewer authorization scopes"));
+  });
   it("requests five standard scopes without upgrading existing grants or bypassing provider consent", () => {
     const authorization = normalizedSkill.split("## Reviewer authorization scopes")[1]?.split("## Daily update check")[0];
     expect(authorization).toBeDefined();
