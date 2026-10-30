@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   createDelegationGrant,
+  assertMaintenanceReturnPermit,
   delegationApprovalDigest,
   delegationRevocationDigest,
   delegationScopeDigest,
@@ -116,6 +117,12 @@ function writeApprovalState(root: string, now = 1_000, record?: { action: string
   fs.writeFileSync(file, `schema_version: "1.1"\nworkflow:\n  step: 5\n  stage: ${value.stage}\n  status: RUNNING\n  workspace_id: ${value.workspaceId}\n  workspace_name: ${workspace.name}\n  workspace_root: ${identity.workspaceRoot}\n  canonical_repository: ${value.canonicalRepository}\n  worktree_root: ${value.worktreeRoot}\n  branch: ${value.branch}\n  observed_commit: ${identity.observedCommit}\n  dirty_state: ${identity.dirtyState}\n  installation_id: ${value.installationId ?? identity.installationId}\n  endpoint_fingerprint: ${value.endpointFingerprint ?? "fixture-endpoint"}\n  connector_name: ${value.connectorName ?? "fixture-connector"}\n  connector_app_id: ${value.mcpAppId ?? "fixture-app"}\n  connector_version_id: ${value.mcpVersionId ?? "fixture-version"}\n  project_id: ${value.projectId ?? "fixture-project"}\n  chat_id: ${value.chatId ?? "fixture-chat"}\n  codex_session_id: fixture-session\n  checkpoint: ${value.checkpoint ?? "a1-test"}\n  task_id: ${value.taskId ?? "a1-test-task"}\n  event_key: ${value.eventKey ?? "a1-event"}\n  authorized_action: EXECUTED\n  action_id: fixture-action\n  review_stage: post_implementation\n  step4_approval:\n    approved: true\n    approved_at: ${new Date(now).toISOString()}\n${record ? `delegation_approval:\n  decision_id: ${record.decisionId}\n  approved_digest: ${record.approvedDigest}\n  action: ${record.action}\n  scope_digest: ${record.scopeDigest}\n  target_digest: ${record.targetDigest}\n  approved_at: ${new Date(now).toISOString()}\n  approver_identity_ref: ${record.approverIdentityRef}\n` : ""}`);
   return file;
 }
+
+it("cannot promote legacy proof JSON into Maintenance return authority", () => {
+  const legacyProof = JSON.parse('{"policyVersion":"a1-v1","action":"c2c_transport","decision":"ALLOW"}');
+  const assertedAuthority = JSON.parse('{"sendAuthorized":true,"authorKind":"human"}');
+  expect(() => assertMaintenanceReturnPermit(legacyProof, assertedAuthority)).toThrow(/live trusted host authority/);
+});
 
 describe("A1 delegated authorization boundaries", () => {
   let stateDir: string;

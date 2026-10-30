@@ -14,6 +14,26 @@ import { recordTeamAiAuthObservation, type TeamAiAuthObservationInput } from "./
 import { operationTargetsMatch, type GitHubOperationObservation, type GitHubOperationTarget } from "./operation.js";
 import type { IabAdapter } from "./iab-adapter.js";
 import { assertDelegatedTransportPermit, type DelegatedTransportPermit } from "./delegation.js";
+import { consumeMaintenanceSendClaim, observeMaintenanceSend } from "./authorization.js";
+import { renderMaintenanceResult, type MaintenanceHost, type MaintenanceReceipt } from "./maintenance-handoff.js";
+
+export async function deliverMaintenanceNotice(receipt: MaintenanceReceipt, browser: NonNullable<MaintenanceHost["browser"]>) {
+  if (receipt.state !== "SENDING" || receipt.sendAttempts !== 1) throw new Error("maintenance delivery requires the atomic send claim");
+  const text = renderMaintenanceResult(receipt.target);
+  if (createHash("sha256").update(text).digest("hex") !== receipt.payloadHash) throw new Error("maintenance notice payload changed");
+  consumeMaintenanceSendClaim(receipt);
+  let observed: Parameters<typeof observeMaintenanceSend>[2];
+  let phase: "submit" | "observe" = "submit";
+  try {
+    await browser.sendMessage({ idempotencyKey: receipt.eventKey, text });
+    phase = "observe";
+    observed = await browser.observeVisibleBubble({ eventKey: receipt.eventKey, payloadHash: receipt.payloadHash });
+  } catch (error) {
+    // Browser failure after claiming cannot prove non-acceptance.
+    observed = { visible: false, errorPhase: phase, reason: error instanceof Error ? error.message : "Browser operation failed" };
+  }
+  return { outcome: "END_TURN_REQUIRED" as const, receipt: observeMaintenanceSend(receipt.eventKey, receipt.payloadHash, observed) };
+}
 
 export type DeliveryState = "prepared" | "sending" | "confirmed" | "ambiguous";
 export type RemoteMessageState = "accepted" | "pending" | "reasoning" | "in_progress" | "missing" | "failed" | "unknown";

@@ -6,6 +6,13 @@ const skill = fs.readFileSync(path.join(process.cwd(), "skill", "SKILL.md"), "ut
 const normalizedSkill = skill.replace(/\s+/g, " ");
 
 describe("Codex-native Skill contract", () => {
+  it("keeps end-of-turn Maintenance instructions scoped and explicit about absent host authority", () => {
+    for (const text of ["handoff_profile: maintenance-v1.2/end-of-turn-browser-v1", "No official host adapter is installed", "END THIS CODEX TURN", "Do not wait for the next PLAN", "not-yet-emitted", "queue or steer cannot substitute"]) {
+      expect(normalizedSkill).toContain(text);
+    }
+    expect(normalizedSkill).toContain("It does not replace canonical routing");
+    expect(normalizedSkill).toContain("not a JSON proof");
+  });
   it("keeps the automatic in-app browser setup flow", () => {
     for (const phrase of [
       "ALWAYS use the built-in in-app browser (iab)",

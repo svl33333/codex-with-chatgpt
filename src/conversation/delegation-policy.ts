@@ -3,6 +3,9 @@ import type { GitHubOperationRecord } from "./operation.js";
 import { assertTeamAiAuthResult } from "./teamai.js";
 
 export const DELEGATION_POLICY_VERSION = "a1-v1" as const;
+export const MAINTENANCE_RETURN_ACTION = "maintenance_handoff" as const;
+// Return-only authority never joins the legacy action vocabulary or execution grant.
+export const MAINTENANCE_RETURN_ROUTE = "MAINTENANCE_RETURN_ONLY" as const;
 
 export type DelegatedAction = "c2c_transport" | "workspace_read" | "operation_reconcile";
 export type DelegationRoute = "DELEGATED_TRANSPORT" | "LOCAL_WORKSPACE_READ" | "KNOWN_OPERATION_RECONCILE";

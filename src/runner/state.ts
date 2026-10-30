@@ -4,7 +4,9 @@ import { z } from "zod";
 import { getStateDir, writeAtomicSecureJson } from "../config/paths.js";
 import { parseStrictJson } from "../config/strict-json.js";
 import { readBoundedText, type RunnerOutcome } from "./canonical.js";
-import type { GoalObservation } from "./goal.js";
+import { assertMaintenanceGoalIdentity, assertMaintenanceGoalTarget, type GoalObservation, type MaintenanceGoal } from "./goal.js";
+import { withLease } from "../config/lease.js";
+import { MAINTENANCE_HANDOFF_PROFILE, maintenanceEventKey, type MaintenanceTarget } from "../conversation/maintenance-handoff.js";
 import fs from "node:fs";
 
 const actionReferenceSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -53,4 +55,57 @@ export function loadRunnerCheckpoint(file: string, observation: GoalObservation)
 export function saveRunnerCheckpoint(file: string, checkpoint: RunnerCheckpoint, outcome?: RunnerOutcome, kind: RunnerAuditKind = "none", observation?: RunnerAuditObservation): void {
   if (outcome) checkpoint.audit = [...checkpoint.audit, { iteration: checkpoint.iteration, outcome, kind, ...(observation ? { observation } : {}) }].slice(-32);
   writeAtomicSecureJson(file, checkpointSchema.parse(checkpoint));
+}
+
+const maintenanceCheckpointSchema = z.object({
+  schemaVersion: z.literal(1), profile: z.literal(MAINTENANCE_HANDOFF_PROFILE), goalId: z.string(),
+  revision: z.number().int().positive(), goalDigest: actionReferenceSchema, generation: z.number().int().nonnegative(),
+  completed: z.array(z.string()).max(256), pending: z.object({
+    operationId: z.string(), eventKey: z.string(), sessionId: z.string(), turnId: z.string(),
+    next: z.object({ operationId: z.string(), state: z.enum(["RESERVED", "STARTED", "CONFLICT", "UNKNOWN"]), turnId: z.string().optional() }).strict().optional(),
+  }).strict().nullable(),
+}).strict();
+export type MaintenanceCheckpoint = z.infer<typeof maintenanceCheckpointSchema>;
+
+export function withMaintenanceGoalLease<T>(goal: MaintenanceGoal, target: MaintenanceTarget, action: (checkpoint: MaintenanceCheckpoint, save: () => void) => T): T {
+  const parsedGoal = assertMaintenanceGoalTarget(goal, target);
+  return withMaintenanceCheckpointLease(parsedGoal, action);
+}
+
+function withMaintenanceCheckpointLease<T>(parsedGoal: MaintenanceGoal, action: (checkpoint: MaintenanceCheckpoint, save: () => void) => T): T {
+  const files = runnerFiles(parsedGoal.selection.workspaceRoot, parsedGoal.selection.workstream);
+  return withLease(files.lease, () => {
+    const goalDigest = createHash("sha256").update(JSON.stringify(parsedGoal)).digest("hex");
+    const checkpoint: MaintenanceCheckpoint = fs.existsSync(files.checkpoint)
+      ? maintenanceCheckpointSchema.parse(parseStrictJson(readBoundedText(files.checkpoint, 128 * 1024)))
+      : { schemaVersion: 1, profile: MAINTENANCE_HANDOFF_PROFILE, goalId: parsedGoal.id, revision: parsedGoal.revision, goalDigest, generation: 0, completed: [], pending: null };
+    if (checkpoint.goalId !== parsedGoal.id || checkpoint.revision !== parsedGoal.revision || checkpoint.goalDigest !== goalDigest) throw new Error("maintenance Goal changed; reconcile existing pending");
+    return action(checkpoint, () => { checkpoint.generation += 1; writeAtomicSecureJson(files.checkpoint, maintenanceCheckpointSchema.parse(checkpoint)); });
+  });
+}
+
+export function recordMaintenanceForwardResult(goal: MaintenanceGoal, target: MaintenanceTarget, operationId: string, result: { outcome: "started"; turnId: string } | { outcome: "conflict" | "unknown" }): void {
+  // Expiry stops new work, but cannot erase the result of an already reserved call.
+  const parsedGoal = assertMaintenanceGoalIdentity(goal, target);
+  withMaintenanceCheckpointLease(parsedGoal, (checkpoint, save) => {
+    const pending = checkpoint.pending;
+    const next = pending?.next;
+    if (!pending || pending.operationId !== target.operationId || pending.sessionId !== target.sessionId || pending.turnId !== target.turnId || !next || next.operationId !== operationId || next.state !== "RESERVED") throw new Error("maintenance forward pending changed; reconcile only");
+    const validStart = result.outcome === "started" && typeof result.turnId === "string" && result.turnId.length > 0 && result.turnId !== target.turnId;
+    next.state = validStart ? "STARTED" : result.outcome === "conflict" ? "CONFLICT" : "UNKNOWN";
+    if (result.outcome === "started" && validStart) next.turnId = result.turnId;
+    save();
+  });
+}
+
+export function prepareMaintenancePending(checkpoint: MaintenanceCheckpoint, target: MaintenanceTarget): void {
+  const previous = checkpoint.pending;
+  if (checkpoint.completed.includes(target.operationId)) throw new Error("maintenance operation already completed; reconcile only");
+  if (previous && previous.operationId !== target.operationId) {
+    if (previous.next?.state !== "STARTED" || previous.next.operationId !== target.operationId || previous.next.turnId !== target.turnId || previous.sessionId !== target.sessionId) throw new Error("maintenance Goal already has pending work");
+    checkpoint.completed = [...checkpoint.completed, previous.operationId].slice(-256);
+  } else if (previous && (previous.eventKey !== maintenanceEventKey(target) || previous.sessionId !== target.sessionId || previous.turnId !== target.turnId)) {
+    throw new Error("maintenance pending identity changed");
+  }
+  if (!previous || previous.operationId !== target.operationId) checkpoint.pending = { operationId: target.operationId, eventKey: maintenanceEventKey(target), sessionId: target.sessionId, turnId: target.turnId };
 }
