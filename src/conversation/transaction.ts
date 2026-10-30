@@ -41,6 +41,105 @@ import {
   type DelegatedTransportPermit,
 } from "./delegation.js";
 import type { TeamAiCapabilityResult } from "./teamai.js";
+import { createHash } from "node:crypto";
+import { runGit } from "../workspace/git.js";
+import { readExecutionOutput } from "../execution/output.js";
+import { readExecutionRecords } from "../execution/records.js";
+import { assertMaintenanceGoalTarget, type MaintenanceGoal } from "../runner/goal.js";
+import { prepareMaintenancePending, recordMaintenanceForwardResult, withMaintenanceGoalLease } from "../runner/state.js";
+import { claimMaintenanceSendOwnedLease, observeMaintenanceSend, prepareMaintenanceReceiptOwnedLease, readMaintenanceReceipt } from "./authorization.js";
+import { reserveMaintenanceReturn } from "./delegation.js";
+import { MaintenanceCapabilityUnavailable, maintenanceEventKey, maintenanceTargetDigest, maintenanceTargetSchema, parseMaintenanceInstruction, resolveMaintenanceAuthority,
+  type MaintenanceAuthority, type MaintenanceHost, type MaintenanceReceipt, type MaintenanceTarget } from "./maintenance-handoff.js";
+import { deliverMaintenanceNotice } from "./delivery.js";
+
+function assertMaintenanceSavedResult(target: MaintenanceTarget): void {
+  const head = runGit(target.worktreeRoot, ["rev-parse", "HEAD"]);
+  const branch = runGit(target.worktreeRoot, ["branch", "--show-current"]);
+  if (!head.ok || !branch.ok || head.stdout.trim() !== target.head || branch.stdout.trim() !== target.branch) throw new Error("maintenance saved result Git identity mismatch");
+  const output = readExecutionOutput(target.workspaceId, target.result.outputId);
+  if (!output.ok || createHash("sha256").update(output.text).digest("hex") !== target.result.sha256) throw new Error("maintenance saved result is unavailable, filtered, or changed");
+  const record = readExecutionRecords(target.workspaceId, 256).find((item) => item.outputId === target.result.outputId && item.maintenance?.operationId === target.operationId);
+  const evidence = record?.maintenance;
+  if (!evidence || evidence.goalRef !== target.goalId || evidence.planRef !== target.planRef || evidence.head !== target.head || evidence.sessionId !== target.sessionId || evidence.turnId !== target.turnId || evidence.resultSha256 !== target.result.sha256) throw new Error("maintenance execution record mismatch");
+}
+
+function beginMaintenanceReturn(goal: MaintenanceGoal, authority: MaintenanceAuthority, claim: boolean): { claimed: boolean; receipt: MaintenanceReceipt } {
+  const target = authority.target;
+  return withMaintenanceGoalLease(goal, target, (checkpoint, save) => {
+    prepareMaintenancePending(checkpoint, target);
+    return withOwnedEventLease(maintenanceEventKey(target), () => {
+      const proof = reserveMaintenanceReturn(authority);
+      const receipt = prepareMaintenanceReceiptOwnedLease(authority, proof);
+      const result = claim ? claimMaintenanceSendOwnedLease(authority, proof) : { claimed: false, receipt };
+      save();
+      return result;
+    });
+  });
+}
+
+export function createMaintenanceHandoffTransaction(host?: MaintenanceHost) {
+  function matchingReceipt(target: MaintenanceTarget): MaintenanceReceipt {
+    const receipt = readMaintenanceReceipt(maintenanceEventKey(target));
+    if (!receipt || maintenanceTargetDigest(receipt.target) !== maintenanceTargetDigest(target)) throw new Error("maintenance prepared target changed; reconcile the original binding");
+    return receipt;
+  }
+  async function authorityFor(goal: MaintenanceGoal, input: MaintenanceTarget): Promise<MaintenanceAuthority> {
+    const target = maintenanceTargetSchema.parse(input);
+    assertMaintenanceGoalTarget(goal, target);
+    const authority = await resolveMaintenanceAuthority(host, target);
+    assertMaintenanceSavedResult(target);
+    return authority;
+  }
+  return {
+    async prepare(goal: MaintenanceGoal, target: MaintenanceTarget): Promise<MaintenanceReceipt> {
+      return beginMaintenanceReturn(goal, await authorityFor(goal, target), false).receipt;
+    },
+    async send(goal: MaintenanceGoal, target: MaintenanceTarget) {
+      const authority = await authorityFor(goal, target);
+      if (!host?.browser) throw new MaintenanceCapabilityUnavailable("existing official in-app browser");
+      const claim = beginMaintenanceReturn(goal, authority, true);
+      if (!claim.claimed) return { outcome: "RECONCILE_ONLY" as const, receipt: claim.receipt };
+      return deliverMaintenanceNotice(claim.receipt, host.browser);
+    },
+    async reconcile(goal: MaintenanceGoal, target: MaintenanceTarget): Promise<MaintenanceReceipt> {
+      const authority = await authorityFor(goal, target);
+      if (!host?.browser) throw new MaintenanceCapabilityUnavailable("existing browser observation");
+      const receipt = matchingReceipt(authority.target);
+      const observed = await host.browser.observeVisibleBubble({ eventKey: receipt.eventKey, payloadHash: receipt.payloadHash });
+      return observeMaintenanceSend(receipt.eventKey, receipt.payloadHash, observed);
+    },
+    async forward(goal: MaintenanceGoal, input: MaintenanceTarget, instructionRef: string) {
+      const authority = await authorityFor(goal, input);
+      const target = authority.target;
+      matchingReceipt(target);
+      if (!host?.forward || host.forward.contract !== "atomic-compare-and-start-v1" || !host.readInstruction) throw new MaintenanceCapabilityUnavailable("formally authorized atomic compare-and-start and instruction reader");
+      const terminal = await host.readTurn(target.sessionId, target.turnId);
+      if (terminal.sessionId !== target.sessionId || terminal.turnId !== target.turnId || terminal.operationId !== target.operationId || !terminal.inputRef || terminal.status !== "completed" || terminal.contentOmitted !== false || !terminal.fullFinal?.trim() || !terminal.finalRef || !terminal.sessionRevision) throw new MaintenanceCapabilityUnavailable("exact completed provider turn and full final");
+      const instruction = await host.readInstruction(instructionRef);
+      const header = parseMaintenanceInstruction(instruction.text);
+      if (instruction.source !== "provider" || instruction.authorKind !== "assistant" || instruction.projectId !== target.projectId || instruction.chatId !== target.chatId || !instruction.chatTurnId || instruction.basedOnFinalRef !== terminal.finalRef || instruction.instructionRef !== instructionRef || !instruction.executionAuthorityRef || header.goal_ref !== goal.id || header.plan_ref !== goal.planRef || header.workstream !== target.workstream || header.codex_session !== target.sessionId || header.reply_ref !== target.replyRef || header.operation_id === target.operationId) throw new Error("maintenance next instruction does not match the actual result and binding");
+      const admitted = withMaintenanceGoalLease(goal, target, (checkpoint, save) => {
+        const pending = checkpoint.pending;
+        if (!pending || pending.operationId !== target.operationId || pending.turnId !== target.turnId || pending.sessionId !== target.sessionId || pending.next || checkpoint.completed.includes(header.operation_id)) return false;
+        pending.next = { operationId: header.operation_id, state: "RESERVED" };
+        save();
+        return true;
+      });
+      if (!admitted) return { outcome: "RECONCILE_ONLY" as const };
+      let result: Awaited<ReturnType<NonNullable<MaintenanceHost["forward"]>["compareAndStart"]>>;
+      try {
+        const observed = await host.forward.compareAndStart({ sessionId: target.sessionId, previousTurnId: target.turnId,
+          expectedRevision: terminal.sessionRevision, operationId: header.operation_id, instruction: instruction.text,
+          instructionRef, executionAuthorityRef: instruction.executionAuthorityRef, goalId: goal.id, planRef: goal.planRef });
+        result = observed && observed.outcome === "started" && typeof observed.turnId === "string" && observed.turnId.trim() && observed.turnId !== target.turnId
+          ? observed : observed?.outcome === "conflict" ? { outcome: "conflict" } : { outcome: "unknown" };
+      } catch { result = { outcome: "unknown" }; }
+      recordMaintenanceForwardResult(goal, target, header.operation_id, result);
+      return result;
+    },
+  };
+}
 
 type TransportBeginInput = WorkflowAuthorizationIssuerInput & {
   sourceCheckpoint: string;

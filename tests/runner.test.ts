@@ -5,7 +5,7 @@ import { cleanup, isolateStateDir } from "./helpers.js";
 import { makeRunnerFixture, makeWorkflowFixture } from "./runner-fixtures.js";
 import { runHeadless } from "../src/runner/headless.js";
 import { loadRunnerCheckpoint, runnerFiles, saveRunnerCheckpoint } from "../src/runner/state.js";
-import { readDurableGoal } from "../src/runner/goal.js";
+import { readDurableGoal, goalSchema, maintenanceGoalSchema } from "../src/runner/goal.js";
 import { readCanonicalSelection } from "../src/runner/canonical.js";
 import { consumeGrant, evaluateC2cTransport, loadDelegationGrant, loadDelegationReservation, saveDelegationGrant } from "../src/conversation/delegation.js";
 import { createWorkflowAuthorizationIssuer, issueDeliveryAuthorization, readDeliveryAuthorization, readDeliveryReceipt, deriveCanonical28Binding } from "../src/conversation/authorization.js";
@@ -39,6 +39,13 @@ describe("partial single-workstream runner", () => {
     const bytes = fs.statSync(runnerFiles(fixture.root, fixture.input.workstream).checkpoint).size;
     console.log(JSON.stringify({ runnerMeasurement: { elapsedMs: performance.now() - started, checkpointBytes: bytes, sends: 1, grantUses: 1 } }));
     expect(bytes).toBeLessThan(4096);
+  });
+
+  it("keeps canonical and Maintenance Goal records strict and non-interchangeable", () => {
+    const original = fs.readFileSync(fixture.stateFile);
+    expect(maintenanceGoalSchema.safeParse(fixture.goal).success).toBe(false);
+    expect(goalSchema.safeParse({ ...fixture.goal, profile: "maintenance-v1.2/end-of-turn-browser-v1" }).success).toBe(false);
+    expect(fs.readFileSync(fixture.stateFile)).toEqual(original);
   });
 
   it("returns all canonical gates and terminal states without loading an adapter", async () => {

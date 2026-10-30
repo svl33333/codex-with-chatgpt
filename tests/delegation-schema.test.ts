@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   createDelegationGrant,
+  reserveMaintenanceReturn,
+  loadMaintenanceGrant,
   delegationApprovalDigest,
   delegationScopeDigest,
   delegationTargetDigest,
@@ -12,6 +14,7 @@ import {
 import { providerEvidenceProjection } from "../src/conversation/delegation-policy.js";
 import { createTeamAiCapabilityProvider, resolveTeamAiAuthResult } from "../src/conversation/teamai.js";
 import { cleanup, isolateStateDir } from "./helpers.js";
+import { resolveMaintenanceAuthority, maintenanceGrantSchema, maintenanceProofSchema, type MaintenanceTarget } from "../src/conversation/maintenance-handoff.js";
 
 type Schema = Record<string, any>;
 
@@ -66,6 +69,28 @@ describe("A1 serialized grant/proof schema contracts", () => {
   let stateDir: string;
   beforeEach(() => { stateDir = isolateStateDir(); });
   afterEach(() => cleanup(stateDir));
+
+  it("keeps published Maintenance grant/proof variants separate from legacy schemas", async () => {
+    const target: MaintenanceTarget = { workspaceId: "schema-fixture", workspaceRoot: stateDir, repository: "https://github.com/example/runtime", worktreeRoot: stateDir,
+      branch: "fixture", head: "a".repeat(40), workstream: "schema-fixture", goalId: "goal", planRef: "plan:fixture", operationId: "op",
+      sessionId: "session", turnId: "turn", projectId: "project", chatId: "chat", replyRef: "binding:fixture", mode: "chat", role: "builder", result: { outputId: 1, sha256: "b".repeat(64) } };
+    const authority = await resolveMaintenanceAuthority({ readContext: async () => ({ binding: target, sendAuthorized: true,
+      approval: { source: "provider", authorKind: "human", messageRef: "fixture-human", goalId: "goal", planRef: target.planRef, projectId: "project", chatId: "chat", action: "maintenance_handoff" },
+      notBefore: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() }), readTurn: async () => { throw new Error("not used"); } }, target);
+    const proof = reserveMaintenanceReturn(authority), grant = loadMaintenanceGrant(proof.grantId)!;
+    const grantSchema = JSON.parse(fs.readFileSync("schema/maintenance-handoff-grant.schema.json", "utf8"));
+    const proofSchema = JSON.parse(fs.readFileSync("schema/maintenance-handoff-proof.schema.json", "utf8"));
+    expect(validate(grant, grantSchema, grantSchema)).toEqual([]);
+    expect(validate(proof, proofSchema, proofSchema)).toEqual([]);
+    expect(maintenanceGrantSchema.safeParse({ ...grant, action: "merge" }).success).toBe(false);
+    expect(maintenanceProofSchema.safeParse({ ...proof, policyVersion: "a1-v1" }).success).toBe(false);
+    expect(validate({ ...grant, action: "merge" }, grantSchema, grantSchema).length).toBeGreaterThan(0);
+    const legacyGrant = JSON.parse(fs.readFileSync("schema/delegation-grant.schema.json", "utf8"));
+    const legacyProof = JSON.parse(fs.readFileSync("schema/delegation-proof.schema.json", "utf8"));
+    expect(validate(grant, legacyGrant, legacyGrant).length).toBeGreaterThan(0);
+    expect(validate(proof, legacyProof, legacyProof).length).toBeGreaterThan(0);
+    expect(() => createDelegationGrant(JSON.parse(JSON.stringify(grant)))).toThrow();
+  });
 
   it("validates generated grants and local/provider proof projections against the published schemas", () => {
     const grantSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schema", "delegation-grant.schema.json"), "utf8")) as Schema;

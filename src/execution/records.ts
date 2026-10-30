@@ -22,6 +22,11 @@ export const executionRecordSchema = z.object({
   notes: z.string().optional(),
   outputId: z.number().int().positive().optional(),
   outputAvailable: z.boolean().optional(),
+  maintenance: z.object({
+    profile: z.literal("maintenance-v1.2/end-of-turn-browser-v1"), goalRef: z.string().min(1), planRef: z.string().min(1),
+    operationId: z.string().min(1), sessionId: z.string().min(1), turnId: z.string().min(1),
+    head: z.string().regex(/^[a-f0-9]{40}$/), resultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().optional(),
   canonicalReview: z.object({
     workstream: z.string(), workflowCommit: z.string().regex(/^[a-f0-9]{40}$/),
     checkpoint: z.string().min(1), reviewStage: z.literal("post_implementation"),
