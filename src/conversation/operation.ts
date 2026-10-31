@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { getStateDir, readJsonIfExists, writeAtomicSecureJson } from "../config/paths.js";
+import { z } from "zod";
+import { getStateDir, writeAtomicSecureJson } from "../config/paths.js";
 import { withLease } from "../config/lease.js";
+import { readStrictJsonFile } from "../config/strict-json.js";
 
 export type GitHubOperationKind =
   | "issue_create"
@@ -82,6 +84,31 @@ export interface GitHubOperationRecord {
   createdAt: string;
   updatedAt: string;
 }
+
+const OPERATION_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const operationRecordSchema = z.object({
+  schemaVersion: z.literal(1),
+  operationKey: z.string().min(1),
+  target: z.object({
+    kind: z.enum(["issue_create", "issue_update", "push", "pr_create", "pr_update", "review", "publication"]),
+    repository: z.string().min(1),
+    logicalOperationId: z.string().min(1),
+    issueNumber: z.number().int().positive().safe().optional(),
+    pullRequestNumber: z.number().int().positive().safe().optional(),
+    ref: z.string().optional(),
+    expectedCommit: z.string().optional(),
+    expectedContentHash: z.string().optional(),
+    expectedRevision: z.string().optional(),
+    headRef: z.string().optional(),
+    baseRef: z.string().optional(),
+    marker: z.string().optional(),
+  }).passthrough(),
+  payloadHash: z.string().min(1),
+  reconciliationPath: z.enum(["local_persisted", "provider_bound"]).optional(),
+  generation: z.number().int().nonnegative().safe(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+}).passthrough();
 
 function bounded(value: string | undefined, max = 256): string | undefined {
   if (value === undefined) return undefined;
@@ -222,13 +249,9 @@ export function prepareGitHubOperation(target: GitHubOperationTarget, payloadHas
   const key = operationKey(normalizedTarget);
   return withOperationLease(key, () => {
     const file = operationFile(key);
-    const existing = readJsonIfExists<GitHubOperationRecord>(file);
+    const existing = readGitHubOperation(key);
     if (existing) {
       if (
-        existing.schemaVersion !== 1 ||
-        existing.operationKey !== key ||
-        !Number.isSafeInteger(existing.generation) ||
-        existing.generation < 0 ||
         existing.payloadHash !== payloadHash ||
         !sameTarget(existing.target, normalizedTarget)
       ) {
@@ -237,8 +260,9 @@ export function prepareGitHubOperation(target: GitHubOperationTarget, payloadHas
       // Use the persisted generation as a compare-and-swap guard even when
       // this call only rehydrates an already-prepared logical operation.
       const observedGeneration = existing.generation;
-      const current = readJsonIfExists<GitHubOperationRecord>(file);
-      if (!current || current.generation !== observedGeneration || current.operationKey !== key) {
+      if (observedGeneration === Number.MAX_SAFE_INTEGER) throw new Error("GitHub operation generation is exhausted");
+      const current = readGitHubOperation(key);
+      if (!current || current.generation !== observedGeneration || current.payloadHash !== payloadHash || !sameTarget(current.target, normalizedTarget)) {
         throw new Error("GitHub operation generation changed during preparation");
       }
       const next: GitHubOperationRecord = {
@@ -247,7 +271,7 @@ export function prepareGitHubOperation(target: GitHubOperationTarget, payloadHas
         updatedAt: new Date().toISOString(),
       };
       writeAtomicSecureJson(file, next);
-      const committed = readJsonIfExists<GitHubOperationRecord>(file);
+      const committed = readGitHubOperation(key);
       if (!committed || committed.generation !== next.generation || committed.payloadHash !== payloadHash || !sameTarget(committed.target, normalizedTarget)) {
         throw new Error("GitHub operation generation CAS failed");
       }
@@ -269,7 +293,15 @@ export function prepareGitHubOperation(target: GitHubOperationTarget, payloadHas
 }
 
 export function readGitHubOperation(operationKeyValue: string): GitHubOperationRecord | null {
-  return readJsonIfExists<GitHubOperationRecord>(operationFile(operationKeyValue));
+  if (!OPERATION_KEY_PATTERN.test(operationKeyValue)) throw new Error("GitHub operation key is invalid");
+  const result = readStrictJsonFile<unknown>(operationFile(operationKeyValue));
+  if (result.status === "MISSING") return null;
+  if (result.status !== "OK") throw new Error(`GitHub operation record is ${result.status.toLowerCase()}`);
+  const parsed = operationRecordSchema.safeParse(result.value);
+  if (!parsed.success || parsed.data.operationKey !== operationKeyValue || operationKey(parsed.data.target) !== operationKeyValue) {
+    throw new Error("GitHub operation record identity or schema is invalid");
+  }
+  return parsed.data;
 }
 
 /**
@@ -278,8 +310,6 @@ export function readGitHubOperation(operationKeyValue: string): GitHubOperationR
  * operation record.
  */
 export function readKnownLogicalOperation(operationKeyValue: string): GitHubOperationRecord | null {
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(operationKeyValue)) return null;
-  const record = readGitHubOperation(operationKeyValue);
-  if (!record || record.schemaVersion !== 1 || record.operationKey !== operationKeyValue || operationKey(record.target) !== operationKeyValue || typeof record.payloadHash !== "string" || !record.payloadHash || !Number.isSafeInteger(record.generation) || record.generation < 0) return null;
-  return record;
+  if (!OPERATION_KEY_PATTERN.test(operationKeyValue)) return null;
+  return readGitHubOperation(operationKeyValue);
 }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -24,8 +24,9 @@ import {
   consumeGrant,
   revokeDelegationGrant,
   type DelegationScope,
+  type DelegationAuditEntry,
 } from "../src/conversation/delegation.js";
-import { writeAtomicSecureJson } from "../src/config/paths.js";
+import { delegationSubdir, writeAtomicSecureJson } from "../src/config/paths.js";
 import { parseStrictJson, readStrictJsonFile } from "../src/config/strict-json.js";
 import { operationKey, prepareGitHubOperation, readKnownLogicalOperation } from "../src/conversation/operation.js";
 import { deriveActiveCanonicalBinding, readDeliveryReceiptForOperation } from "../src/conversation/authorization.js";
@@ -122,6 +123,57 @@ it("cannot promote legacy proof JSON into Maintenance return authority", () => {
   const legacyProof = JSON.parse('{"policyVersion":"a1-v1","action":"c2c_transport","decision":"ALLOW"}');
   const assertedAuthority = JSON.parse('{"sendAuthorized":true,"authorKind":"human"}');
   expect(() => assertMaintenanceReturnPermit(legacyProof, assertedAuthority)).toThrow(/live trusted host authority/);
+});
+
+describe("persisted delegation audit", () => {
+  let stateDir: string;
+  const grantId = "audit-preservation-grant";
+  const entry: DelegationAuditEntry = { at: new Date(1_000).toISOString(), grantId, action: "workspace_read", decision: "ALLOW" };
+  const file = () => path.join(delegationSubdir("audit"), `${createHash("sha256").update(JSON.stringify(grantId)).digest("hex").slice(0, 48)}.json`);
+  beforeEach(() => { stateDir = isolateStateDir(); });
+  afterEach(() => { vi.restoreAllMocks(); cleanup(stateDir); });
+
+  it.each([
+    ["malformed JSON", '[{"at":'],
+    ["duplicate keys", '[{"grantId":"a","grantId":"b"}]'],
+    ["object instead of array", "{}"],
+    ["null history", "null"],
+    ["null entry", "[null]"],
+    ["missing entry fields", "[{}]"],
+    ["wrong grant", JSON.stringify([{ ...entry, grantId: "other-grant" }])],
+    ["unknown decision", JSON.stringify([{ ...entry, decision: "UNKNOWN_DECISION" }])],
+    ["invalid optional generation", JSON.stringify([{ ...entry, grantGeneration: "0" }])],
+  ])("preserves %s and refuses both audit reads and appends", (_name, raw) => {
+    const bytes = Buffer.from(raw);
+    fs.writeFileSync(file(), bytes);
+    expect.soft(() => readDelegationAudit(grantId)).toThrow();
+    expect.soft(() => recordDelegationAudit({ ...entry, decision: "DENY", reason: "later-entry" })).toThrow();
+    expect(fs.readFileSync(file())).toEqual(bytes);
+  });
+
+  it("preserves unreadable audit bytes and does not turn them into an empty history", () => {
+    recordDelegationAudit(entry);
+    const raw = fs.readFileSync(file());
+    const read = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      if (String(args[0]) === file()) throw Object.assign(new Error("synthetic denied audit read"), { code: "EACCES" });
+      return Reflect.apply(read, fs, args);
+    });
+    expect.soft(() => readDelegationAudit(grantId)).toThrow();
+    expect.soft(() => recordDelegationAudit({ ...entry, decision: "DENY" })).toThrow();
+    vi.restoreAllMocks();
+    expect(fs.readFileSync(file())).toEqual(raw);
+  });
+
+  it("initializes only missing history and retains minimal legacy entries and extension fields", () => {
+    expect(readDelegationAudit(grantId)).toEqual([]);
+    recordDelegationAudit(entry);
+    expect(readDelegationAudit(grantId)).toHaveLength(1);
+    const legacy = { ...entry, legacyExtension: "retained" };
+    fs.writeFileSync(file(), JSON.stringify([legacy]));
+    recordDelegationAudit({ ...entry, decision: "DENY", reason: "later-entry" });
+    expect(readDelegationAudit(grantId)).toMatchObject([legacy, { ...entry, decision: "DENY", reason: "later-entry" }]);
+  });
 });
 
 describe("A1 delegated authorization boundaries", () => {

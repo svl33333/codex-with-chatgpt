@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { operationKey, prepareGitHubOperation, reconcileGitHubOperation } from "../src/conversation/operation.js";
+import { operationKey, prepareGitHubOperation, readGitHubOperation, reconcileGitHubOperation, type GitHubOperationRecord } from "../src/conversation/operation.js";
 import { cleanup, isolateStateDir } from "./helpers.js";
 
 describe("operation-specific GitHub reconciliation", () => {
@@ -120,5 +120,90 @@ describe("operation-specific GitHub reconciliation", () => {
       windowsHide: true,
     });
     expect(second.status).toBe(2);
+  });
+});
+
+describe("persisted operation records", () => {
+  let stateDir: string;
+  const target = { kind: "push" as const, repository: "https://github.com/example/repo", logicalOperationId: "persisted-operation", ref: "refs/heads/main", expectedCommit: "before" };
+  const key = operationKey(target);
+  const file = () => path.join(stateDir, "transport", "operations", `${key}.json`);
+  beforeEach(() => { stateDir = isolateStateDir(); });
+  afterEach(() => { vi.restoreAllMocks(); cleanup(stateDir); });
+
+  it.each([
+    ["malformed JSON", () => '{"schemaVersion":1,'],
+    ["empty bytes", () => ""],
+    ["null", () => "null"],
+    ["duplicate keys", () => '{"schemaVersion":1,"schemaVersion":2}'],
+    ["unknown schema", (record: GitHubOperationRecord) => JSON.stringify({ ...record, schemaVersion: 2 })],
+    ["wrong key", (record: GitHubOperationRecord) => JSON.stringify({ ...record, operationKey: "other" })],
+    ["missing target", (record: GitHubOperationRecord) => JSON.stringify({ ...record, target: null })],
+    ["misbound target", (record: GitHubOperationRecord) => JSON.stringify({ ...record, target: { ...record.target, logicalOperationId: "other" } })],
+    ["invalid generation", (record: GitHubOperationRecord) => JSON.stringify({ ...record, generation: "0" })],
+    ["invalid payload", (record: GitHubOperationRecord) => JSON.stringify({ ...record, payloadHash: null })],
+  ] as const)("preserves %s and refuses a replacement operation before caller effects", (_name, corrupt) => {
+    const record = prepareGitHubOperation(target, "original-payload");
+    const raw = Buffer.from(corrupt(record));
+    fs.writeFileSync(file(), raw);
+    expect.soft(() => readGitHubOperation(key)).toThrow();
+    const authorize = vi.fn();
+    const submit = vi.fn();
+    let refused = false;
+    try {
+      prepareGitHubOperation({ ...target, expectedCommit: "replacement" }, "replacement-payload");
+      authorize();
+      submit();
+    } catch { refused = true; }
+    expect.soft(fs.readFileSync(file())).toEqual(raw);
+    expect.soft(authorize).not.toHaveBeenCalled();
+    expect.soft(submit).not.toHaveBeenCalled();
+    expect(refused).toBe(true);
+  });
+
+  it("preserves an unreadable operation and reports failure to readers and preparers", () => {
+    prepareGitHubOperation(target, "original-payload");
+    const raw = fs.readFileSync(file());
+    const read = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      if (String(args[0]) === file()) throw Object.assign(new Error("synthetic denied operation read"), { code: "EACCES" });
+      return Reflect.apply(read, fs, args);
+    });
+    expect.soft(() => readGitHubOperation(key)).toThrow();
+    expect.soft(() => prepareGitHubOperation({ ...target, expectedCommit: "replacement" }, "replacement-payload")).toThrow();
+    vi.restoreAllMocks();
+    expect(fs.readFileSync(file())).toEqual(raw);
+  });
+
+  it("preserves a target changed at the generation check", () => {
+    const record = prepareGitHubOperation(target, "original-payload");
+    const changed = Buffer.from(JSON.stringify({ ...record, target: { ...record.target, expectedCommit: "other-writer" } }));
+    const read = fs.readFileSync;
+    let reads = 0;
+    vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      if (String(args[0]) === file() && ++reads === 2) fs.writeFileSync(file(), changed);
+      return Reflect.apply(read, fs, args);
+    });
+    expect.soft(() => prepareGitHubOperation(target, "original-payload")).toThrow();
+    vi.restoreAllMocks();
+    expect(fs.readFileSync(file())).toEqual(changed);
+  });
+
+  it("refuses generation exhaustion without rewriting the record", () => {
+    const record = prepareGitHubOperation(target, "original-payload");
+    const raw = Buffer.from(JSON.stringify({ ...record, generation: Number.MAX_SAFE_INTEGER }));
+    fs.writeFileSync(file(), raw);
+    expect.soft(() => prepareGitHubOperation(target, "original-payload")).toThrow();
+    expect(fs.readFileSync(file())).toEqual(raw);
+  });
+
+  it("creates only missing records and recovers valid legacy records with their optional fields intact", () => {
+    expect(readGitHubOperation(key)).toBeNull();
+    const created = prepareGitHubOperation(target, "original-payload");
+    expect(created.generation).toBe(0);
+    fs.writeFileSync(file(), JSON.stringify({ ...created, reconciliationPath: "local_persisted", legacyExtension: "retained" }));
+    const recovered = prepareGitHubOperation(target, "original-payload");
+    expect(recovered).toMatchObject({ target: created.target, payloadHash: created.payloadHash, createdAt: created.createdAt, generation: 1, reconciliationPath: "local_persisted", legacyExtension: "retained" });
+    expect(readGitHubOperation(key)).toEqual(recovered);
   });
 });

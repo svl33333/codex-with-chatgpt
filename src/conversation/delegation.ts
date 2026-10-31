@@ -307,6 +307,30 @@ export interface DelegationAuditEntry {
   auditReference?: string;
 }
 
+const delegationAuditEntrySchema = z.object({
+  at: z.string().min(1),
+  grantId: z.string().min(1),
+  action: z.string().min(1),
+  grantGeneration: z.number().int().nonnegative().safe().optional(),
+  approvalDecisionId: z.string().optional(),
+  approvalDigest: z.string().optional(),
+  scopeDigest: z.string().optional(),
+  targetDigest: z.string().optional(),
+  bindingDigest: z.string().optional(),
+  decision: z.enum(["ALLOW", "DENY", "RESERVED", "CONSUMED", "RELEASED", "REVOKED", "SUPERSEDED"]),
+  reason: z.string().optional(),
+  reservationId: z.string().optional(),
+  reservationState: z.enum(["RESERVED", "CONSUMED", "RELEASED"]).optional(),
+  commitReference: z.string().optional(),
+  authorityId: z.string().optional(),
+  receiptReference: z.string().optional(),
+  reconciliationReference: z.string().optional(),
+  revocationEvidence: z.string().optional(),
+  supersessionEvidence: z.string().optional(),
+  auditReference: z.string().optional(),
+}).passthrough();
+const delegationAuditSchema = z.array(delegationAuditEntrySchema);
+
 const COMMON_SCOPE_KEYS = new Set([
   "workspaceId", "workstreamId", "workspaceName", "workspaceRoot", "canonicalRepository", "worktreeRoot", "branch", "stage", "canonicalAction", "checkpoint", "taskId", "eventKey", "projectId", "chatId", "connectorName", "mcpAppId", "mcpVersionId", "installationId", "endpointFingerprint", "action",
 ]);
@@ -473,8 +497,7 @@ function appendAudit(entry: DelegationAuditEntry): void {
   const lease = acquireLease(auditLock(entry.grantId));
   try {
     const file = auditFile(entry.grantId);
-    const existingResult = readStrictJsonFile<DelegationAuditEntry[]>(file);
-    const existing = existingResult.status === "OK" && Array.isArray(existingResult.value) ? existingResult.value : [];
+    const existing = readDelegationAudit(entry.grantId);
     let grant: DelegationGrant | null = null;
     try { grant = loadDelegationGrant(entry.grantId); } catch { /* preserve the lifecycle evidence even if the grant is unavailable */ }
     const enriched: DelegationAuditEntry = {
@@ -486,6 +509,7 @@ function appendAudit(entry: DelegationAuditEntry): void {
       ...(entry.targetDigest === undefined && grant ? { targetDigest: grant.targetDigest } : {}),
       ...(entry.auditReference ? {} : { auditReference: `a1-audit-${digest({ grantId: entry.grantId, reservationId: entry.reservationId ?? null, at: entry.at, decision: entry.decision }).slice(0, 48)}` }),
     };
+    if (!delegationAuditEntrySchema.safeParse(enriched).success) throw new Error("Delegation audit entry is invalid");
     writeAtomicSecureJson(file, [...existing, enriched]);
   } finally {
     lease.release();
@@ -498,8 +522,12 @@ export function recordDelegationAudit(entry: DelegationAuditEntry): void {
 }
 
 export function readDelegationAudit(grantId: string): DelegationAuditEntry[] {
-  const result = readStrictJsonFile<DelegationAuditEntry[]>(auditFile(grantId));
-  return result.status === "OK" && Array.isArray(result.value) ? result.value : [];
+  const result = readStrictJsonFile<unknown>(auditFile(grantId));
+  if (result.status === "MISSING") return [];
+  if (result.status !== "OK") throw new Error(`Delegation audit record is ${result.status.toLowerCase()}`);
+  const parsed = delegationAuditSchema.safeParse(result.value);
+  if (!parsed.success || parsed.data.some(entry => entry.grantId !== grantId)) throw new Error("Delegation audit record identity or schema is invalid");
+  return parsed.data;
 }
 
 export interface DelegationApprovalContract {
