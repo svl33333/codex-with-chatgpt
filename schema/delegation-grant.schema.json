@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-with-chatgpt.local/schema/delegation-grant.schema.json",
+  "title": "A1 Delegation Grant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policyVersion", "grantId", "generation", "createdAt", "notBefore", "expiresAt", "action", "route", "scope", "scopeDigest", "target", "targetDigest", "approval", "maxUses", "useCount", "status"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "policyVersion": { "type": "string", "maxLength": 64 },
+    "grantId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "generation": { "type": "integer", "minimum": 0 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "notBefore": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "action": { "enum": ["c2c_transport", "workspace_read", "operation_reconcile"] },
+    "route": { "enum": ["DELEGATED_TRANSPORT", "LOCAL_WORKSPACE_READ", "KNOWN_OPERATION_RECONCILE"] },
+    "scope": { "$ref": "#/$defs/scope" },
+    "scopeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "target": { "$ref": "#/$defs/target" },
+    "targetDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "approval": { "$ref": "#/$defs/approval" },
+    "maxUses": { "type": "integer", "minimum": 1, "maximum": 256 },
+    "useCount": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["APPROVED_ACTIVE", "REVOKED", "SUPERSEDED", "EXPIRED"] },
+    "providerRequirement": { "$ref": "#/$defs/provider" },
+    "supersedesGrantIds": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 128 } },
+    "supersededBy": { "type": "string", "maxLength": 128 },
+    "revokedAt": { "type": "string", "format": "date-time" },
+    "revocationReason": { "type": "string", "maxLength": 256 }
+  },
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "workstreamId", "canonicalRepository", "worktreeRoot", "branch", "stage", "canonicalAction", "action"],
+      "properties": {
+        "workspaceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "workstreamId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "workspaceName": { "type": "string", "maxLength": 512 },
+        "workspaceRoot": { "type": "string", "maxLength": 512 },
+        "canonicalRepository": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "worktreeRoot": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "branch": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "stage": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "canonicalAction": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "checkpoint": { "type": "string", "maxLength": 512 },
+        "taskId": { "type": "string", "maxLength": 512 },
+        "eventKey": { "type": "string", "maxLength": 512 },
+        "projectId": { "type": "string", "maxLength": 512 },
+        "chatId": { "type": "string", "maxLength": 512 },
+        "connectorName": { "type": "string", "maxLength": 512 },
+        "mcpAppId": { "type": "string", "maxLength": 512 },
+        "mcpVersionId": { "type": "string", "maxLength": 512 },
+        "installationId": { "type": "string", "maxLength": 512 },
+        "endpointFingerprint": { "type": "string", "maxLength": 512 },
+        "action": { "enum": ["c2c_transport", "workspace_read", "operation_reconcile"] }
+      }
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "checkpoint", "eventKey", "messageType", "payloadHash"],
+          "properties": {
+            "kind": { "enum": ["c2c_transport", "transport"] },
+            "checkpoint": { "type": "string", "maxLength": 512 },
+            "eventKey": { "type": "string", "maxLength": 512 },
+            "messageType": { "enum": ["INIT", "HANDOFF", "PLAN", "EXECUTED", "REVIEW", "RE_REVIEW"] },
+            "payloadHash": { "type": "string", "maxLength": 512 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "operation", "maxBytes"],
+          "properties": {
+            "kind": { "enum": ["workspace_read", "workspace"] },
+            "operation": { "enum": ["read", "search", "status"] },
+            "path": { "type": "string", "maxLength": 512 },
+            "query": { "type": "string", "maxLength": 512 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "operationKey"],
+          "properties": {
+            "kind": { "enum": ["operation_reconcile", "operation"] },
+            "operationKey": { "type": "string", "maxLength": 128 },
+            "proofRequest": { "type": "string", "maxLength": 512 }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflowStatePath", "checkpoint", "decisionId", "approverIdentityRef", "approvedAt", "approvedDigest"],
+      "properties": {
+        "workflowStatePath": { "type": "string", "maxLength": 512 },
+        "checkpoint": { "type": "string", "maxLength": 256 },
+        "decisionId": { "type": "string", "maxLength": 256 },
+        "approverIdentityRef": { "type": "string", "maxLength": 256 },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "approvedDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "skillName", "capabilityVersion", "expectedAccount"],
+      "properties": {
+        "source": { "const": "teamai" },
+        "skillName": { "const": "github-cli-auth" },
+        "capabilityVersion": { "type": "string", "maxLength": 128 },
+        "expectedAccount": { "type": "string", "maxLength": 256 },
+        "minCapabilityVersion": { "type": "string", "maxLength": 128 },
+        "maxCapabilityVersion": { "type": "string", "maxLength": 128 }
+      }
+    }
+  }
+}

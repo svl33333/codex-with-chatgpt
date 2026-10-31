@@ -10,6 +10,49 @@ description: >
 
 # Codex with ChatGPT
 
+## Explicit Maintenance end-of-turn Browser handoff
+
+Use this section only for an approved Maintenance v1.2 Goal/Plan carrying
+`handoff_profile: maintenance-v1.2/end-of-turn-browser-v1`.
+It does not replace canonical routing, Doctor gates, old grants, state/pin,
+or the legacy EXECUTED/PLAN wait below.
+
+The source contract is `createMaintenanceHandoffTransaction`. Its trusted
+in-process host port must read formal human-origin Goal/Plan send permission,
+the existing exact Project/ordinary-Chat binding and provider records. It is
+not a JSON proof, a bool written by the model, a URL check, or a new Browser
+driver. No official host adapter is installed by this source increment.
+`c2c maintenance-handoff status` reports that limitation; prepare/observe/
+reconcile fail closed without one. Never supply a fixture, arbitrary module,
+cookie/private API, or another browser as the operational host.
+
+After all approved work, tests and internal review, save the real result in
+the existing filtered execution output/logger and bind operation/Goal/Plan,
+actual worktree/HEAD and provider session/turn. Before final_answer, use the
+existing official IAB once with the exact existing receiver. Only the fresh
+atomic PREPARED->SENDING claim permits submit. SENDING/visible/UNKNOWN
+reentry and A1 reservation recovery permit reconciliation only.
+
+The `[CODEX-GENERATED TASK RESULT]` envelope is a saved-result notice with
+`workflow_authority: none`, not canonical EXECUTED, human approval, a review
+verdict, or the current turn's not-yet-emitted terminal/full final. Perform
+one small visible-message observation, preserve pending on ambiguity, then
+emit a short final referring to the saved result and END THIS CODEX TURN.
+Do not wait for the next PLAN in this Maintenance sending turn.
+
+In a separate ordinary-Chat assistant turn, ChatGPT independently obtains the
+actual provider terminal and full final, evaluates them and generates the
+next instruction. A trusted existing forward owner must have separately
+authorized execution and atomically compare expected session/preceding turn
+with the actual start. A normal turn/start, queue or steer cannot substitute.
+Missing capability, intervening turn, omitted final or UNKNOWN means no
+forward and preserved A2 pending; never blind resend or repeat completed work.
+Use existing manual handoff if the official route cannot continue.
+
+Source/fixture checks are not real Browser send, two-cycle E2E, installed
+adoption, release, merge or production acceptance. Each retains its existing
+authority and evidence requirements. No Dot, scheduler, DB or daemon is added.
+
 ChatGPT thinks. Codex works.
 
 You (Codex) own execution: editing, shell, git, tests, recovery.
@@ -281,6 +324,50 @@ receipt decision. Task approval, current-message selection, and canonical
 review are distinct facts. Follow the resolved `codex-c2c-v2` workflow and its
 recorded pin for formal evidence, verdicts, remediation, and Human Gates; do
 not add Runtime checks as new mandatory receipt fields or treat READY as PASS.
+
+### Durable transport and recovery guard
+
+For an authorized control event, reload the pinned workflow step, exact
+workspace/repository/worktree and Project/chat/session/app binding, the event
+authorization, and its receipt after compaction, restart, browser reconnect, or
+session reconstruction. The runtime must persist the prepared and sending
+states before the single composer submit and must observe the visible remote
+bubble before treating the event as delivered. A timeout, lost process, or
+missing bubble enters reconciliation; it never permits a blind resend. Query
+the exact remote target and payload evidence first, and retry only the same
+logical event after a proven pre-accept failure. A duplicate callback or
+review response is consumed once by response key/hash.
+
+At send time, inspect the live reasoning setting and request Extra High/
+`極高` where the product supports it. Record only bounded reasoning
+observation/correction status; do not infer success from a requested setting.
+The IAB adapter owns composer and visible-bubble mechanics, while the local
+transport owns only the durable transaction and reconciliation guard.
+
+The executable boundary is `createDurableTransportTransaction()`: the IAB
+runtime calls `beginAndPrepare` before submit, `markSending` and
+`observeVisible` around the single composer action, `observeTeamAi` for a
+branded result from `resolveTeamAiAuthResult`, `reconcile` for the exact
+operation target, and `consumeResponse` only after an exact visible bubble.
+The hidden CLI mirrors those recovery phases with `c2c transport begin`,
+`observe`, `auth-observe`, `reconcile`, and `response` for crash/session
+reconstruction. A0 callers cannot provide a bare authentication
+`classification`; only a current TeamAI `github-cli-auth` capability result
+with verified source, skill name, version, and correlation is accepted.
+
+If a GitHub operation is interrupted by authentication, reload the original
+operation authorization and exact binding before recovery. Resolve the current
+TeamAI `github-cli-auth` capability and pass it bounded observations; TeamAI
+alone classifies credential-context mismatch versus genuine invalid/expired
+authentication and owns device flow, browser interaction, connected-mail
+verification, account context, and security boundaries. A0 records correlation,
+reconstructs after compaction/session loss, reconciles the original remote
+operation, and continues it once after TeamAI reports healthy credentials. The
+text `hosts.yml: Access is denied` is never an A0-local authentication verdict.
+CAPTCHA, unsupported 2FA, password/account recovery, ambiguous account,
+unexpected SSO or organization approval, and scope/privilege expansion remain
+human/security boundaries. Never persist tokens, cookies, pairing codes,
+headers, raw email, source, diffs, logs, or unbounded page text.
 
 ## Reviewer authorization scopes
 

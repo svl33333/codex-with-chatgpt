@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import fs from "node:fs";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { resolveWorkspaceRepository } from "../workspace/repository.js";
 import type { ChatGPTSurfaceId } from "../provisioning/chatgpt-surface.js";
 import { withWorkspaceOperation } from "../process/workspace-operation.js";
+import { readEvidenceGit, runEvidenceGit } from "../workspace/git-evidence.js";
 
 export type EndpointMode = "stable" | "ephemeral" | "local";
 
@@ -34,6 +36,19 @@ export interface ConnectionBinding {
   updatedAt: string;
 }
 
+/** Stable, non-secret identity projection used to bind durable transport state. */
+export interface WorktreeIdentity {
+  workspaceRoot: string;
+  worktreeRoot: string;
+  canonicalRepository: string;
+  branch: string;
+  observedCommit: string;
+  dirtyState: "clean" | "dirty" | "unknown";
+  installationId: string;
+  endpointFingerprint?: string;
+  connectorName?: string;
+}
+
 function installationFile(): string {
   return path.join(getStateDir(), "installation.json");
 }
@@ -60,6 +75,50 @@ export function readInstallationIdentity(): InstallationIdentity | null {
   const existing = readJsonIfExists<InstallationIdentity>(installationFile());
   return existing && validInstallationId(existing.installationId) ? existing : null;
 }
+
+export function worktreeRootFor(workspaceRoot: string): string {
+  return fs.realpathSync.native(readEvidenceGit(workspaceRoot, ["rev-parse", "--show-toplevel"], 16 * 1024).trim());
+}
+
+export function readWorktreeIdentity(input: {
+  workspaceRoot: string;
+  endpoint?: string | null;
+  endpointMode?: EndpointMode;
+  connectorName?: string | null;
+}): WorktreeIdentity {
+  const installation = readInstallationIdentity();
+  if (!installation) throw new Error("INSTALLATION_IDENTITY_UNAVAILABLE");
+  const worktreeRoot = worktreeRootFor(input.workspaceRoot);
+  let branch: string;
+  let commit: string;
+  try {
+    branch = readEvidenceGit(input.workspaceRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], 4096).trim();
+    commit = readEvidenceGit(input.workspaceRoot, ["rev-parse", "--verify", "HEAD"], 1024).trim();
+  } catch { throw new Error("WORKTREE_IDENTITY_UNAVAILABLE"); }
+  if (!branch || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(commit)) {
+    throw new Error("WORKTREE_IDENTITY_UNAVAILABLE");
+  }
+  let dirtyState: WorktreeIdentity["dirtyState"] = "unknown";
+  try {
+    const changed = runEvidenceGit(input.workspaceRoot, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--", "."]);
+    const untracked = readEvidenceGit(input.workspaceRoot, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]);
+    if (changed.code === 0 || changed.code === 1) dirtyState = changed.code === 1 || untracked.length > 0 ? "dirty" : "clean";
+  } catch { /* Failed Git observations cannot establish a clean worktree. */ }
+  const mode = input.endpointMode ?? "ephemeral";
+  return {
+    workspaceRoot: fs.realpathSync.native(input.workspaceRoot),
+    worktreeRoot,
+    canonicalRepository: canonicalRepositoryFor(input.workspaceRoot),
+    branch,
+    observedCommit: commit,
+    dirtyState,
+    installationId: installation.installationId,
+    endpointFingerprint: input.endpoint === undefined ? undefined : endpointFingerprint(input.endpoint, mode),
+    connectorName: input.connectorName?.trim() || undefined,
+  };
+}
+
+export const buildWorktreeIdentity = readWorktreeIdentity;
 
 export function endpointFingerprint(endpoint: string | null | undefined, mode: EndpointMode): string {
   const normalized = endpoint ? endpoint.trim().replace(/\/+$/, "").toLowerCase() : "";

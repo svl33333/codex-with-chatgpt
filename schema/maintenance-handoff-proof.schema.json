@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "maintenance-handoff-proof.schema.json",
+  "title": "Maintenance return proof projection; serialized proof is not authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "policyVersion", "action", "decision", "grantId", "reservationId", "eventKey", "targetDigest"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "policyVersion": {"const": "maintenance-handoff-v1"},
+    "action": {"const": "maintenance_handoff"}, "decision": {"const": "ALLOW"},
+    "grantId": {"type": "string", "pattern": "^maintenance:[a-f0-9]{64}$"},
+    "reservationId": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "eventKey": {"type": "string", "pattern": "^maintenance:[a-f0-9]{64}$"},
+    "targetDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

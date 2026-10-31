@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "maintenance-handoff-grant.schema.json",
+  "title": "Maintenance return-only grant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policyVersion", "action", "grantId", "generation", "target", "targetDigest", "approval", "notBefore", "expiresAt", "status", "maxUses", "useCount"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "policyVersion": {"const": "maintenance-handoff-v1"},
+    "action": {"const": "maintenance_handoff"}, "grantId": {"type": "string", "pattern": "^maintenance:[a-f0-9]{64}$"},
+    "generation": {"type": "integer", "minimum": 1}, "target": {"$ref": "#/$defs/target"},
+    "targetDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "approval": {"$ref": "#/$defs/approval"},
+    "notBefore": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["APPROVED_ACTIVE", "REVOKED", "EXPIRED"]}, "maxUses": {"const": 1},
+    "useCount": {"type": "integer", "minimum": 0, "maximum": 1}
+  },
+  "$defs": {
+    "reference": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^[^\\r\\n\\u0000]+$"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workspaceId", "workspaceRoot", "repository", "worktreeRoot", "branch", "head", "workstream", "goalId", "planRef", "operationId", "sessionId", "turnId", "projectId", "chatId", "replyRef", "mode", "role", "result"],
+      "properties": {
+        "workspaceId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+        "workspaceRoot": {"$ref": "#/$defs/reference"}, "repository": {"$ref": "#/$defs/reference"},
+        "worktreeRoot": {"$ref": "#/$defs/reference"}, "branch": {"$ref": "#/$defs/reference"},
+        "head": {"type": "string", "pattern": "^[a-f0-9]{40}$"}, "workstream": {"$ref": "#/$defs/reference"},
+        "goalId": {"$ref": "#/$defs/reference"}, "planRef": {"$ref": "#/$defs/reference"},
+        "operationId": {"$ref": "#/$defs/reference"}, "sessionId": {"$ref": "#/$defs/reference"},
+        "turnId": {"$ref": "#/$defs/reference"}, "projectId": {"$ref": "#/$defs/reference"},
+        "chatId": {"$ref": "#/$defs/reference"}, "replyRef": {"$ref": "#/$defs/reference"}, "mode": {"const": "chat"}, "role": {"const": "builder"},
+        "result": {"type": "object", "additionalProperties": false, "required": ["outputId", "sha256"], "properties": {
+          "outputId": {"type": "integer", "minimum": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }}
+      }
+    },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "authorKind", "messageRef", "goalId", "planRef", "projectId", "chatId", "action"],
+      "properties": {
+        "source": {"const": "provider"}, "authorKind": {"const": "human"},
+        "messageRef": {"$ref": "#/$defs/reference"}, "goalId": {"$ref": "#/$defs/reference"},
+        "planRef": {"$ref": "#/$defs/reference"}, "projectId": {"$ref": "#/$defs/reference"},
+        "chatId": {"$ref": "#/$defs/reference"}, "action": {"const": "maintenance_handoff"}
+      }
+    }
+  }
+}

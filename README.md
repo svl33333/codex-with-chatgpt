@@ -287,3 +287,70 @@ connector setup, zero-touch first-run experience.
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xiaoduoya/codex-with-chatgpt&type=date&legend=top-left" />
  </picture>
 </a>
+# Opt-in partial A2 runner
+
+The source-only `runner run` command rehydrates one explicit workstream and
+performs at most one owner-authorized action. This is a partial foundation for
+Issue #10, not full headless production execution. It does not install itself,
+provision a connection, migrate a workstream or approve any Human Gate.
+
+```sh
+node bin/c2c.js runner run --workspace /selected/worktree \
+  --workstream selected-slug --goal /selected/worktree/.harness/selected-slug/goal.json \
+  --workflow-root /existing/resolver-validated/workflow-checkout
+```
+
+The Workflow checkout must already have been selected and validated by the
+existing resolver (`WORKFLOW_READY`). This command supports the published
+2.8.0 shape and recorded pin; it reads immutable Git objects, never upgrades
+an old pin or downloads a contract. A successful synthetic test does not
+establish installed consumer readiness.
+
+The local-only Goal is strict JSON: `schemaVersion: 1`, logical `id`, increasing
+`revision`, bounded `objective`, ISO `createdAt`/`expiresAt`, exact `selection`
+(`repository`, real `workspaceRoot`, `workstream`, `branch`, `statePath` relative
+to that harness), and the two `continuationKeys`. Retain the standard keys
+using TeamAI's existing `New-C2CGoalTemplate`/`Ensure-C2CGoalRoutingKeys` helper:
+`Use C2C.` and `For any GitHub authentication, authorization, device-flow,
+email-verification, credential-context, or recovery event, resolve and use the
+current TeamAI github-cli-auth Skill.` Goal prose is never executable or a grant.
+
+With no typed request, the command returns `NO_ACTION_AVAILABLE`. An optional
+private `--request-file` selects `kind: transport | workspace_read |
+operation_reconcile` with a `delegation` request for the exact existing A1
+grant/target. Transport additionally needs the actual existing configured
+host's in-memory `AuthorizedMessageAdapter`, current Runtime binding/session
+and owning test evidence. The runner CLI does not import adapter module paths;
+standalone CLI transport blocks without an existing host adapter.
+Missing capabilities return `CAPABILITY_BLOCKED`. `validation` and
+`source_remediation` have no production dispatcher in this slice and always
+block without executing a command or editing source. There is no shell/prose
+executor or automatic browser provisioning.
+
+The machine-readable outcomes are `CONTINUED`, `NO_ACTION_AVAILABLE`,
+`HUMAN_GATE_REQUIRED`, `CAPABILITY_BLOCKED`, `RECOVERABLE_FAILURE`, `TERMINAL`.
+They do not change canonical workflow statuses. `FIX_REQUIRED` belongs to the
+existing execution owner's remediation loop; the runner cannot claim that
+remediation/validation occurred. Human-waiting, publication and merge remain
+human controlled. C2C_WAITING reconciles an existing event without a new send.
+
+The private checkpoint and lease use the existing Runtime state directory.
+Goal edits cannot change operation identity. A lost result before the A0
+commit, or an interrupted read/reconciliation without its completed owner
+reference, remains unknown and blocks rather than spending another use.
+Leases coordinate cooperating local processes, not hostile users or remote
+filesystems. At 256 retained completed actions this bounded slice blocks;
+it does not evict evidence and risk replay. Keep Goals, private requests,
+connection/session identifiers and runner checkpoints out of Git. Rollback
+reverts source while retaining owner evidence. Issue #10 remains incomplete.
+
+For canonical2.8 Step5, the existing execution record can carry `canonicalReview`
+metadata correlating the actual Runtime task/iteration with the canonical
+workstream/checkpoint/review cycle. The execution owner captures
+`captureExecutionInputDigest(workspaceRoot)` before required validation, then
+uses existing `record` with `--workstream`, `--workflow-root` and `--input-digest`.
+The logger checks the same input bytes when recording. A0 checks them again
+against current source/test inputs before transport. This is one optional
+extension of the existing logger, not a new receipt or execution authority.
+Unbound historical results cannot satisfy this preparation. No runner path
+claims that validation occurred or sets canonical REVIEW to make it eligible.
