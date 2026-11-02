@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, git, isolateStateDir, makeGitRepo, makeTmpDir } from "./helpers.js";
-import { appendExecutionRecord } from "../src/execution/records.js";
+import { appendExecutionRecord, readMaintenanceExecutionHistory, readExecutionRecords } from "../src/execution/records.js";
 import { readExecutionOutput, saveExecutionOutput } from "../src/execution/output.js";
 import { createMaintenanceHandoffTransaction } from "../src/conversation/transaction.js";
 import { claimMaintenanceSendOwnedLease, readMaintenanceReceipt, withOwnedEventLease } from "../src/conversation/authorization.js";
@@ -258,5 +258,148 @@ describe("Maintenance owner handoff fixtures (not real Browser or two-cycle E2E)
     host.forward!.compareAndStart = vi.fn(async () => ({ outcome: "started", turnId: "" }));
     expect((await transaction.forward(goal, target, "instruction:b")).outcome).toBe("unknown");
     expect(pending()?.next?.state).toBe("UNKNOWN");
+  });
+
+  async function prepareObservation() {
+    const transaction = createMaintenanceHandoffTransaction(host);
+    await transaction.prepare(goal, target);
+    const readContext = host.readContext;
+    host.readContext = vi.fn(async (requested) => ({ ...await readContext(requested), readAuthorized: true, sendAuthorized: false }));
+    Object.assign(provider, { status: "completed", error: null, completedAt: new Date().toISOString(), inputTurnId: target.turnId,
+      finalTurnId: target.turnId, finalPhase: "final_answer", itemsComplete: true, fullFinal: "Actual provider final", finalRef: "provider:final-a", sessionRevision: undefined });
+    return transaction;
+  }
+
+  it("records the exact provider final without consuming another grant or changing pending/receipt", async () => {
+    const transaction = await prepareObservation();
+    const checkpointPath = runnerFiles(root, target.workstream).checkpoint;
+    const checkpoint = fs.readFileSync(checkpointPath);
+    const receipt = readMaintenanceReceipt(maintenanceEventKey(target))!;
+    const grant = loadMaintenanceGrant(receipt.grantId);
+    const first = await transaction.observeResult(goal, target);
+    expect(first.appended).toBe(true); expect(first.observation.isComplete).toBe(true);
+    expect(first.observation.finalSha256).toBe(createHash("sha256").update("Actual provider final").digest("hex"));
+    const file = path.join(stateDir, "executions", `${target.workspaceId}.jsonl`);
+    const original = fs.readFileSync(file);
+    expect((await createMaintenanceHandoffTransaction(host).observeResult(goal, target)).appended).toBe(false);
+    expect(fs.readFileSync(file)).toEqual(original); expect(fs.readFileSync(checkpointPath)).toEqual(checkpoint);
+    expect(readMaintenanceReceipt(maintenanceEventKey(target))).toEqual(receipt); expect(loadMaintenanceGrant(receipt.grantId)).toEqual(grant);
+    expect(send).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled(); expect(pending()?.next).toBeUndefined();
+    expect(readExecutionRecords(target.workspaceId)).toHaveLength(1);
+    expect(original.toString()).not.toContain("Actual provider final");
+    await expect(transaction.forward(goal, target, "instruction:b")).rejects.toThrow();
+  });
+
+  it.each(["active", "failed", "interrupted", "unknown", "systemError"] as const)("keeps %s as an incomplete observation with no send or final promotion", async (status) => {
+    const transaction = await prepareObservation(); provider.status = status;
+    expect((await transaction.observeResult(goal, target)).observation).toMatchObject({ status, isComplete: false, finalSha256: null });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["error", "omitted", "paging", "phase", "final", "completedAt"])("does not certify a completed turn with missing %s evidence", async (boundary) => {
+    const transaction = await prepareObservation();
+    if (boundary === "error") provider.error = { message: "api_key=fixture-secret" };
+    if (boundary === "omitted") provider.contentOmitted = true;
+    if (boundary === "paging") provider.itemsComplete = false;
+    if (boundary === "phase") provider.finalPhase = "commentary";
+    if (boundary === "final") provider.fullFinal = null;
+    if (boundary === "completedAt") provider.completedAt = null;
+    expect((await transaction.observeResult(goal, target)).observation.isComplete).toBe(false);
+    expect(fs.readFileSync(path.join(stateDir, "executions", `${target.workspaceId}.jsonl`), "utf8")).not.toContain("fixture-secret");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("retains a late completed observation after interrupted without replacing history", async () => {
+    const transaction = await prepareObservation(); provider.status = "interrupted"; provider.fullFinal = null; provider.finalRef = null;
+    await transaction.observeResult(goal, target);
+    Object.assign(provider, { status: "completed", fullFinal: "late final", finalRef: "provider:late-final" });
+    await transaction.observeResult(goal, target);
+    expect(readMaintenanceExecutionHistory(target).observations.map(saved => saved.status)).toEqual(["interrupted", "completed"]);
+  });
+
+  it("observes an already pending result after expiry without extending the Goal", async () => {
+    const transaction = await prepareObservation();
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(goal.expiresAt) + 1);
+    expect((await transaction.observeResult(goal, target)).observation.isComplete).toBe(true);
+    await expect(transaction.send(goal, target)).rejects.toThrow(/Goal is not active/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves unknown state when the reader disconnects and does not prepare again", async () => {
+    const transaction = await prepareObservation();
+    host.readTurn = vi.fn(async () => { throw new Error("reader timeout"); });
+    const checkpoint = fs.readFileSync(runnerFiles(root, target.workstream).checkpoint);
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow("reader timeout");
+    expect(fs.readFileSync(runnerFiles(root, target.workstream).checkpoint)).toEqual(checkpoint);
+    expect(readMaintenanceExecutionHistory(target).observations).toHaveLength(0); expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["input", "final", "binding", "permission", "missing", "corrupt", "lease"])("rejects %s mismatch before recording or sending", async (boundary) => {
+    const transaction = await prepareObservation();
+    if (boundary === "input") provider.inputTurnId = "other-turn";
+    if (boundary === "final") provider.finalTurnId = "other-turn";
+    if (boundary === "binding") { const read = host.readContext; host.readContext = async requested => ({ ...await read(requested), binding: { ...requested, chatId: "other-chat" } }); }
+    if (boundary === "permission") { const read = host.readContext; host.readContext = async requested => ({ ...await read(requested), readAuthorized: false }); }
+    const files = runnerFiles(root, target.workstream);
+    if (boundary === "missing") fs.unlinkSync(files.checkpoint);
+    if (boundary === "corrupt") fs.writeFileSync(files.checkpoint, "corrupt checkpoint");
+    const lease = boundary === "lease" ? acquireLease(files.lease) : undefined;
+    const file = path.join(stateDir, "executions", `${target.workspaceId}.jsonl`), original = fs.readFileSync(file);
+    try { await expect(transaction.observeResult(goal, target)).rejects.toThrow(); } finally { lease?.release(); }
+    expect(fs.readFileSync(file)).toEqual(original); expect(send).not.toHaveBeenCalled();
+    if (boundary === "missing") expect(fs.existsSync(files.checkpoint)).toBe(false);
+  });
+
+  it("rechecks read permission after a provider response before persisting", async () => {
+    const transaction = await prepareObservation(); const read = host.readContext;
+    host.readTurn = vi.fn(async () => { host.readContext = async requested => ({ ...await read(requested), readAuthorized: false }); return provider; });
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow(/read binding/);
+    expect(readMaintenanceExecutionHistory(target).observations).toHaveLength(0);
+  });
+
+  it("does not recreate an evicted saved work output from provider evidence", async () => {
+    const transaction = await prepareObservation();
+    for (let index = 0; index < 40; index++) saveExecutionOutput(target.workspaceId, { command: "later fixture", raw: "later result" });
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow(/saved result/);
+    expect(host.readTurn).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["future", "period", "revision"])("rejects a %s Goal rather than using expiry recovery", async (boundary) => {
+    const transaction = await prepareObservation();
+    if (boundary === "future") goal.createdAt = new Date(Date.now() + 500000).toISOString();
+    if (boundary === "period") goal.createdAt = goal.expiresAt;
+    if (boundary === "revision") goal.revision++;
+    const checkpoint = fs.readFileSync(runnerFiles(root, target.workstream).checkpoint);
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow();
+    expect(fs.readFileSync(runnerFiles(root, target.workstream).checkpoint)).toEqual(checkpoint);
+    expect(host.readTurn).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+  });
+
+  it("refuses contradictory same-operation history before reading the provider", async () => {
+    const transaction = await prepareObservation(); recordTarget({ ...target, turnId: "contradictory-turn" });
+    const file = path.join(stateDir, "executions", `${target.workspaceId}.jsonl`), prior = fs.readFileSync(file);
+    const checkpoint = fs.readFileSync(runnerFiles(root, target.workstream).checkpoint);
+    const receipt = readMaintenanceReceipt(maintenanceEventKey(target))!;
+    const grant = loadMaintenanceGrant(receipt.grantId);
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow(/binding/);
+    expect(fs.readFileSync(file)).toEqual(prior); expect(fs.readFileSync(runnerFiles(root, target.workstream).checkpoint)).toEqual(checkpoint);
+    expect(readMaintenanceReceipt(maintenanceEventKey(target))).toEqual(receipt); expect(loadMaintenanceGrant(receipt.grantId)).toEqual(grant);
+    expect(host.readTurn).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["commentary", "unknown"])("recovers the actual final after a %s candidate without replaying the operation", async (phase) => {
+    const transaction = await prepareObservation();
+    provider.finalPhase = phase === "unknown" ? undefined : phase; provider.finalRef = "provider:candidate";
+    const checkpoint = fs.readFileSync(runnerFiles(root, target.workstream).checkpoint);
+    const first = await transaction.observeResult(goal, target); expect(first.observation.isComplete).toBe(false);
+    const file = path.join(stateDir, "executions", `${target.workspaceId}.jsonl`), prior = fs.readFileSync(file);
+    provider.finalPhase = "final_answer"; provider.finalRef = "provider:actual-final";
+    expect((await transaction.observeResult(goal, target)).observation.isComplete).toBe(true);
+    expect(fs.readFileSync(file).subarray(0, prior.length)).toEqual(prior);
+    expect(readMaintenanceExecutionHistory(target).observations).toHaveLength(2);
+    expect(fs.readFileSync(runnerFiles(root, target.workstream).checkpoint)).toEqual(checkpoint);
+    expect(send).not.toHaveBeenCalled(); expect(loadMaintenanceGrant(readMaintenanceReceipt(maintenanceEventKey(target))!.grantId)?.useCount).toBe(1);
+    provider.finalRef = "provider:replacement-final";
+    await expect(transaction.observeResult(goal, target)).rejects.toThrow(/conflict/);
   });
 });

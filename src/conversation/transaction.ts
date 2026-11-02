@@ -44,22 +44,22 @@ import type { TeamAiCapabilityResult } from "./teamai.js";
 import { createHash } from "node:crypto";
 import { readEvidenceGit } from "../workspace/git-evidence.js";
 import { readExecutionOutput } from "../execution/output.js";
-import { readExecutionRecords } from "../execution/records.js";
+import { readExecutionRecords, readMaintenanceExecutionHistory, appendMaintenanceProviderObservation, type ExecutionRecord } from "../execution/records.js";
 import { assertMaintenanceGoalTarget, type MaintenanceGoal } from "../runner/goal.js";
-import { prepareMaintenancePending, recordMaintenanceForwardResult, withMaintenanceGoalLease } from "../runner/state.js";
+import { prepareMaintenancePending, recordMaintenanceForwardResult, withMaintenanceGoalLease, withMaintenanceObservationLease } from "../runner/state.js";
 import { claimMaintenanceSendOwnedLease, observeMaintenanceSend, prepareMaintenanceReceiptOwnedLease, readMaintenanceReceipt } from "./authorization.js";
-import { reserveMaintenanceReturn } from "./delegation.js";
-import { MaintenanceCapabilityUnavailable, maintenanceEventKey, maintenanceTargetDigest, maintenanceTargetSchema, parseMaintenanceInstruction, resolveMaintenanceAuthority,
+import { reserveMaintenanceReturn, loadMaintenanceGrant } from "./delegation.js";
+import { MaintenanceCapabilityUnavailable, maintenanceApprovalSchema, summarizeMaintenanceProviderTurn, maintenanceEventKey, maintenanceTargetDigest, maintenanceTargetSchema, parseMaintenanceInstruction, resolveMaintenanceAuthority,
   type MaintenanceAuthority, type MaintenanceHost, type MaintenanceReceipt, type MaintenanceTarget } from "./maintenance-handoff.js";
 import { deliverMaintenanceNotice } from "./delivery.js";
 
-function assertMaintenanceSavedResult(target: MaintenanceTarget): void {
+function assertMaintenanceSavedResult(target: MaintenanceTarget, exactRecord?: ExecutionRecord): void {
   const head = readEvidenceGit(target.worktreeRoot, ["rev-parse", "HEAD"], 1024).trim();
   const branch = readEvidenceGit(target.worktreeRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], 4096).trim();
   if (head !== target.head || branch !== target.branch) throw new Error("maintenance saved result Git identity mismatch");
   const output = readExecutionOutput(target.workspaceId, target.result.outputId);
   if (!output.ok || createHash("sha256").update(output.text).digest("hex") !== target.result.sha256) throw new Error("maintenance saved result is unavailable, filtered, or changed");
-  const record = readExecutionRecords(target.workspaceId, 256).find((item) => item.outputId === target.result.outputId && item.maintenance?.operationId === target.operationId);
+  const record = exactRecord ?? readExecutionRecords(target.workspaceId, 256).find((item) => item.outputId === target.result.outputId && item.maintenance?.operationId === target.operationId);
   const evidence = record?.maintenance;
   if (!evidence || evidence.goalRef !== target.goalId || evidence.planRef !== target.planRef || evidence.head !== target.head || evidence.sessionId !== target.sessionId || evidence.turnId !== target.turnId || evidence.resultSha256 !== target.result.sha256) throw new Error("maintenance execution record mismatch");
 }
@@ -92,6 +92,35 @@ export function createMaintenanceHandoffTransaction(host?: MaintenanceHost) {
     return authority;
   }
   return {
+    async observeResult(goal: MaintenanceGoal, input: MaintenanceTarget) {
+      if (!host) throw new MaintenanceCapabilityUnavailable("formal authorized provider reader");
+      const target = maintenanceTargetSchema.parse(input);
+      async function readBinding() {
+        const context = await host!.readContext(target);
+        const approval = maintenanceApprovalSchema.parse(context.approval);
+        if (context.readAuthorized !== true || maintenanceTargetDigest(context.binding) !== maintenanceTargetDigest(target) || approval.goalId !== target.goalId || approval.planRef !== target.planRef || approval.projectId !== target.projectId || approval.chatId !== target.chatId) {
+          throw new MaintenanceCapabilityUnavailable("exact provider read binding and authorization");
+        }
+        return approval;
+      }
+      function observeExisting(approval: ReturnType<typeof maintenanceApprovalSchema.parse>) {
+        const receipt = matchingReceipt(target);
+        const grant = loadMaintenanceGrant(receipt.grantId);
+        if (!grant || grant.useCount !== 1 || grant.targetDigest !== maintenanceTargetDigest(target) || JSON.stringify(grant.approval) !== JSON.stringify(approval)) throw new Error("Maintenance observation grant/receipt association mismatch");
+        const history = readMaintenanceExecutionHistory(target);
+        assertMaintenanceSavedResult(target, history.execution);
+      }
+      const approval = await readBinding();
+      withMaintenanceObservationLease(goal, target, () => observeExisting(approval));
+      const terminal = await host.readTurn(target.sessionId, target.turnId);
+      const observation = summarizeMaintenanceProviderTurn(target, terminal);
+      const currentApproval = await readBinding();
+      const appended = withMaintenanceObservationLease(goal, target, () => {
+        observeExisting(currentApproval);
+        return appendMaintenanceProviderObservation(target, observation);
+      });
+      return { observation, appended };
+    },
     async prepare(goal: MaintenanceGoal, target: MaintenanceTarget): Promise<MaintenanceReceipt> {
       return beginMaintenanceReturn(goal, await authorityFor(goal, target), false).receipt;
     },

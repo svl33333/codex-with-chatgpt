@@ -72,6 +72,20 @@ export function withMaintenanceGoalLease<T>(goal: MaintenanceGoal, target: Maint
   return withMaintenanceCheckpointLease(parsedGoal, action);
 }
 
+export function withMaintenanceObservationLease<T>(goal: MaintenanceGoal, target: MaintenanceTarget, observeExisting: () => T): T {
+  const parsedGoal = assertMaintenanceGoalIdentity(goal, target);
+  if (Date.parse(parsedGoal.createdAt) > Date.now() || Date.parse(parsedGoal.createdAt) >= Date.parse(parsedGoal.expiresAt)) throw new Error("invalid Maintenance observation Goal period");
+  const files = runnerFiles(parsedGoal.selection.workspaceRoot, parsedGoal.selection.workstream);
+  if (!fs.existsSync(files.checkpoint)) throw new Error("Maintenance observation requires an existing checkpoint");
+  return withMaintenanceCheckpointLease(parsedGoal, (checkpoint) => {
+    const pending = checkpoint.pending;
+    if (!pending || pending.eventKey !== maintenanceEventKey(target) || pending.operationId !== target.operationId || pending.sessionId !== target.sessionId || pending.turnId !== target.turnId) {
+      throw new Error("Maintenance observation requires the original pending turn");
+    }
+    return observeExisting();
+  });
+}
+
 function withMaintenanceCheckpointLease<T>(parsedGoal: MaintenanceGoal, action: (checkpoint: MaintenanceCheckpoint, save: () => void) => T): T {
   const files = runnerFiles(parsedGoal.selection.workspaceRoot, parsedGoal.selection.workstream);
   return withLease(files.lease, () => {
