@@ -47,13 +47,15 @@ export type MaintenanceReceipt = z.infer<typeof maintenanceReceiptSchema>;
 export interface MaintenanceProviderTurn {
   sessionId: string; turnId: string; operationId: string; inputRef: string;
   status: "active" | "completed" | "failed" | "interrupted" | "unknown" | "systemError";
-  fullFinal: string | null; finalRef: string | null; contentOmitted: boolean; sessionRevision: string;
+  fullFinal: string | null; finalRef: string | null; contentOmitted: boolean; sessionRevision?: string;
+  inputTurnId?: string; finalTurnId?: string; finalPhase?: string;
+  itemsComplete?: boolean; completedAt?: string | null; error?: unknown;
 }
 
 /** Trusted in-process host port; no CLI or serialized input can install one. */
 export interface MaintenanceHost {
   readContext(target: MaintenanceTarget): Promise<{
-    binding: MaintenanceTarget; approval: MaintenanceApproval; sendAuthorized: boolean;
+    binding: MaintenanceTarget; approval: MaintenanceApproval; sendAuthorized: boolean; readAuthorized?: boolean;
     notBefore: string; expiresAt: string;
   }>;
   readTurn(sessionId: string, turnId: string): Promise<MaintenanceProviderTurn>;
@@ -80,6 +82,38 @@ export class MaintenanceCapabilityUnavailable extends Error {
 export interface MaintenanceAuthority {
   readonly target: MaintenanceTarget; readonly approval: MaintenanceApproval;
   readonly notBefore: string; readonly expiresAt: string;
+}
+
+const safeProviderReference = reference.refine((value) => {
+  const filtered = sanitizeExecutionOutput(value);
+  return filtered.allowed && !filtered.truncated && filtered.text === value;
+}, "unsafe provider reference");
+export const maintenanceProviderObservationSchema = z.object({
+  inputRef: safeProviderReference, status: z.enum(["active", "completed", "failed", "interrupted", "unknown", "systemError"]),
+  hasError: z.boolean().nullable(), completedAt: z.string().datetime().nullable(),
+  finalRef: safeProviderReference.nullable(), finalSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  itemsComplete: z.boolean(), contentOmitted: z.boolean(), isComplete: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.isComplete && (value.status !== "completed" || value.hasError !== false || !value.completedAt || !value.finalRef || !value.finalSha256 || !value.itemsComplete || value.contentOmitted)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "incomplete provider final" });
+  }
+});
+export type MaintenanceProviderObservation = z.infer<typeof maintenanceProviderObservationSchema>;
+
+export function summarizeMaintenanceProviderTurn(target: MaintenanceTarget, turn: MaintenanceProviderTurn): MaintenanceProviderObservation {
+  if (turn.sessionId !== target.sessionId || turn.turnId !== target.turnId || turn.operationId !== target.operationId || turn.inputTurnId !== target.turnId) {
+    throw new Error("provider input does not belong to the exact Maintenance turn");
+  }
+  const hasError = Object.hasOwn(turn, "error") ? turn.error !== null : null;
+  if (turn.finalRef && turn.finalTurnId !== target.turnId) throw new Error("provider final belongs to a different turn");
+  const finalRef = turn.finalPhase === "final_answer" ? turn.finalRef ?? null : null;
+  const isComplete = turn.status === "completed" && hasError === false && !!turn.completedAt && turn.itemsComplete === true &&
+    turn.contentOmitted === false && turn.finalPhase === "final_answer" && !!finalRef && !!turn.fullFinal?.trim();
+  return maintenanceProviderObservationSchema.parse({
+    inputRef: turn.inputRef, status: turn.status, hasError, completedAt: turn.completedAt ?? null,
+    finalRef, finalSha256: isComplete ? createHash("sha256").update(turn.fullFinal!).digest("hex") : null,
+    itemsComplete: turn.itemsComplete === true, contentOmitted: turn.contentOmitted !== false, isComplete,
+  });
 }
 const authorities = new WeakSet<object>();
 function freezeRecord<T extends object>(value: T): T {

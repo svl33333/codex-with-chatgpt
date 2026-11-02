@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createDurableTransportTransaction } from "../src/conversation/transaction.js";
+import { createDurableTransportTransaction, createMaintenanceHandoffTransaction } from "../src/conversation/transaction.js";
+import type { MaintenanceGoal } from "../src/runner/goal.js";
+import type { MaintenanceTarget } from "../src/conversation/maintenance-handoff.js";
 import { createDelegationGrant, delegationApprovalDigest, delegationScopeDigest, delegationTargetDigest, normalizeDelegationScope } from "../src/conversation/delegation.js";
 import { createTeamAiCapabilityProvider, resolveTeamAiAuthResult, type TeamAiCapabilityProvider } from "../src/conversation/teamai.js";
 import type { TransportBindingIdentity, DeliveryMessageType } from "../src/conversation/authorization.js";
@@ -45,6 +47,14 @@ function appendDelegationApproval(exact: TransportBindingIdentity, record: { dec
 }
 
 describe("canonical/Maintenance transaction separation", () => {
+  it("refuses result observation without a trusted reader before creating owner state", async () => {
+    const isolated = isolateStateDir();
+    try {
+      const before = fs.readdirSync(isolated);
+      await expect(createMaintenanceHandoffTransaction().observeResult({} as MaintenanceGoal, {} as MaintenanceTarget)).rejects.toThrow(/formal authorized provider reader/);
+      expect(fs.readdirSync(isolated)).toEqual(before);
+    } finally { cleanup(isolated); }
+  });
   it("rejects Maintenance action text without rewriting canonical state", () => {
     const isolated = isolateStateDir();
     try {
